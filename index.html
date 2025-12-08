@@ -5,35 +5,44 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Insol Web — Расчёт инсоляции</title>
     
-    <!-- Стили -->
     <link rel="stylesheet" href="css/main.css">
-    
-    <!-- MapLibre GL JS -->
     <link href="https://unpkg.com/maplibre-gl@4.5.0/dist/maplibre-gl.css" rel="stylesheet" />
     <script src="https://unpkg.com/maplibre-gl@4.5.0/dist/maplibre-gl.js"></script>
+    <!-- Earcut для триангуляции полигонов -->
+    <script src="https://cdn.jsdelivr.net/npm/earcut@2.2.4/dist/earcut.min.js"></script>
     
-    <!-- Three.js -->
-    <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
+    <!-- Three.js r128 (стабильная версия с OrbitControls) -->
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
 </head>
+
 <body>
-    <!-- Контейнер карты -->
-    <div id="map-container">
+    <!-- Режим 1: Карта (выбор области) -->
+    <div id="map-mode">
         <div id="map"></div>
-        <canvas id="three-canvas"></canvas>
-    </div>
-    
-    <!-- Информационная панель -->
-    <div id="info-panel">
-        <h3>Insol Web</h3>
-        <p>Расчёт инсоляции по ГОСТ Р 57795-2017</p>
-        <div id="coordinates-display">
-            <span>Lat: <span id="lat">—</span></span>
-            <span>Lon: <span id="lon">—</span></span>
+        
+        <div id="info-panel">
+            <h3>Insol Web</h3>
+            <p>Выберите область для анализа</p>
+            
+            <button id="select-mode-btn">✎ Выбрать область</button>
+            
+            <div id="selection-info"></div>
+            <button id="load-btn" disabled>Загрузить область</button>
         </div>
     </div>
     
-    <!-- Модули приложения -->
-    <script type="module" src="js/core/Coordinates.js"></script>
+    <!-- Режим 2: 3D-сцена -->
+    <div id="scene-mode" class="hidden">
+        <div id="scene-container"></div>
+        
+        <div id="scene-panel">
+            <h3>3D Модель</h3>
+            <p>Зданий: <span id="building-count">0</span></p>
+            <button id="back-btn">← Назад к карте</button>
+        </div>
+    </div>
+    
     <script type="module" src="js/main.js"></script>
 </body>
 </html>
