@@ -121,7 +121,7 @@ class Coordinates {
         this.centerLon = lon;
         this.metersPerDegreeLat = 111132.92 - 559.82 * Math.cos(2 * this.toRadians(lat));
         this.metersPerDegreeLon = 111412.84 * Math.cos(this.toRadians(lat));
-        console.log(`[Coordinates] Новый центр: ${lat}°, ${lon}°`);
+        //console.log(`[Coordinates] Новый центр: ${lat}°, ${lon}°`); Пока что нафиг не нужно, ибо спамит жёстко
     }
 }
 
