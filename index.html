@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Insol Web — Расчёт инсоляции</title>
+    
+    <!-- Стили -->
+    <link rel="stylesheet" href="css/main.css">
+    
+    <!-- MapLibre GL JS -->
+    <link href="https://unpkg.com/maplibre-gl@4.5.0/dist/maplibre-gl.css" rel="stylesheet" />
+    <script src="https://unpkg.com/maplibre-gl@4.5.0/dist/maplibre-gl.js"></script>
+    
+    <!-- Three.js -->
+    <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
+</head>
+<body>
+    <!-- Контейнер карты -->
+    <div id="map-container">
+        <div id="map"></div>
+        <canvas id="three-canvas"></canvas>
+    </div>
+    
+    <!-- Информационная панель -->
+    <div id="info-panel">
+        <h3>Insol Web</h3>
+        <p>Расчёт инсоляции по ГОСТ Р 57795-2017</p>
+        <div id="coordinates-display">
+            <span>Lat: <span id="lat">—</span></span>
+            <span>Lon: <span id="lon">—</span></span>
+        </div>
+    </div>
+    
+    <!-- Модули приложения -->
+    <script type="module" src="js/core/Coordinates.js"></script>
+    <script type="module" src="js/main.js"></script>
+</body>
+</html>
