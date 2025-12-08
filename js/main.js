@@ -9,6 +9,7 @@ import { Coordinates } from './core/Coordinates.js';
 import { MapEngine } from './core/MapEngine.js';
 import { SceneManager } from './core/SceneManager.js';
 import { BuildingLoader } from './buildings/BuildingLoader.js';
+import { BuildingMesh } from './buildings/BuildingMesh.js';
 
 // ============================================
 // Инициализация
@@ -23,6 +24,10 @@ window.coords = coords;
 // Загрузчик зданий
 const buildingLoader = new BuildingLoader();
 window.buildingLoader = buildingLoader;
+
+// Генератор мешей
+const buildingMesh = new BuildingMesh(coords);
+window.buildingMesh = buildingMesh;
 
 // Карта
 const mapEngine = new MapEngine('map', {
@@ -39,11 +44,19 @@ mapEngine.getMap().on('load', async () => {
     sceneManager.init();
     window.sceneManager = sceneManager;
     
-    // Загружаем здания вокруг центра (радиус 150м)
+    // Загружаем здания
     const buildings = await buildingLoader.loadBuildingsAround(55.7558, 37.6173, 150);
-    console.log('[App] Первое здание:', buildings[0]);
     
-    console.log('[App] 3D-сцена готова');
+    // Создаём 3D-меши
+    const meshes = buildingMesh.createMeshes(buildings);
+    
+    // Добавляем на сцену
+    const group = sceneManager.getBuildingsGroup();
+    for (const mesh of meshes) {
+        group.add(mesh);
+    }
+    
+    console.log('[App] Здания добавлены на сцену');
 });
 
 console.log('[App] Инициализация завершена');
