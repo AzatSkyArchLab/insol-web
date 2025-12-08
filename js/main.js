@@ -7,6 +7,7 @@
 
 import { Coordinates } from './core/Coordinates.js';
 import { MapEngine } from './core/MapEngine.js';
+import { SceneManager } from './core/SceneManager.js';
 
 // ============================================
 // Инициализация
@@ -24,8 +25,19 @@ const mapEngine = new MapEngine('map', {
     zoom: 16,
     pitch: 45
 });
-
 mapEngine.init();
 window.mapEngine = mapEngine;
+
+// 3D-сцена (после загрузки карты)
+mapEngine.getMap().on('load', () => {
+    const sceneManager = new SceneManager('three-canvas', mapEngine, coords);
+    sceneManager.init();
+    
+    // Тестовый куб
+    sceneManager.addTestCube(0, 0, 0, 30);
+    
+    window.sceneManager = sceneManager;
+    console.log('[App] 3D-сцена готова');
+});
 
 console.log('[App] Инициализация завершена');
