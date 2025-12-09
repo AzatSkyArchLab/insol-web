@@ -9,34 +9,27 @@
     <link href="https://unpkg.com/maplibre-gl@4.5.0/dist/maplibre-gl.css" rel="stylesheet" />
     <script src="https://unpkg.com/maplibre-gl@4.5.0/dist/maplibre-gl.js"></script>
     
-    <!-- Earcut для триангуляции полигонов -->
     <script src="https://cdn.jsdelivr.net/npm/earcut@2.2.4/dist/earcut.min.js"></script>
-    
-    <!-- OSM to GeoJSON -->
     <script src="https://cdn.jsdelivr.net/npm/osmtogeojson@3.0.0-beta.5/osmtogeojson.js"></script>
-    
-    <!-- Three.js r128 (стабильная версия с OrbitControls) -->
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
 </head>
 
 <body>
-    <!-- Режим 1: Карта (выбор области) -->
+    <!-- Режим 1: Карта -->
     <div id="map-mode">
         <div id="map"></div>
         
         <div id="info-panel">
             <h3>Insol Web</h3>
             <p>Выберите область для анализа</p>
-            
             <button id="select-mode-btn">Выбрать область</button>
-            
             <div id="selection-info"></div>
             <button id="load-btn" disabled>Загрузить область</button>
         </div>
     </div>
     
-        <!-- Режим 2: 3D-сцена -->
+    <!-- Режим 2: 3D-сцена -->
     <div id="scene-mode" class="hidden">
         <div id="scene-container"></div>
         
@@ -100,14 +93,53 @@
             </div>
             
             <div class="card-actions">
-                <button id="edit-height-btn">Изменить высоту</button>
+                <button id="edit-height-btn">📐 Изменить высоту</button>
+                <button id="insolation-grid-btn">☀️ Инсоляционная сетка</button>
+                <button id="select-all-points-btn" class="hidden">✓ Выбрать все точки</button>
+                <button id="calculate-insolation-btn" class="hidden">🔬 Рассчитать инсоляцию</button>
             </div>
-
-
-
-            
         </div>
+        <!-- Конец карточки здания -->
+        
+
+        <!-- Панель результатов инсоляции (выдвижная) -->
+        <div id="insolation-results" class="hidden">
+            <div class="panel-header">
+                <span>☀️ Результаты инсоляции</span>
+                <button id="insolation-results-close" title="Закрыть">✕</button>
+            </div>
+            <div class="panel-content">
+                <div class="result-stats">
+                    <div class="stat pass">
+                        <span id="stat-pass">0</span>
+                        <small>Норма</small>
+                    </div>
+                    <div class="stat warning">
+                        <span id="stat-warning">0</span>
+                        <small>Квартир.</small>
+                    </div>
+                    <div class="stat fail">
+                        <span id="stat-fail">0</span>
+                        <small>Не соотв.</small>
+                    </div>
+                </div>
+                
+                <div class="result-controls">
+                    <button id="toggle-rays-btn">🔆 Лучи точки</button>
+                    <button id="toggle-all-rays-btn">🌞 Все лучи</button>
+                </div>
+                
+                <div class="results-list-header">
+                    Выберите точку для просмотра лучей:
+                </div>
+                
+                <div id="insolation-details"></div>
+            </div>
+        </div>
+        <!-- Конец панели результатов -->
+        
     </div>
+    <!-- Конец scene-mode -->
     
     <script type="module" src="js/main.js"></script>
 </body>

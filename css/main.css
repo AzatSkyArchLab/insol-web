@@ -1,15 +1,42 @@
 /* ============================================
-   INSOL WEB — Стили
+   Insol Web — Mapbox-inspired Design
+   Light theme, blue accent
    ============================================ */
 
+:root {
+    --accent: #1a73e8;
+    --accent-hover: #1557b0;
+    --accent-light: #e8f0fe;
+    --bg: #ffffff;
+    --bg-secondary: #f8f9fa;
+    --bg-tertiary: #f1f3f4;
+    --border: #dadce0;
+    --text: #202124;
+    --text-secondary: #5f6368;
+    --text-tertiary: #80868b;
+    --success: #34a853;
+    --warning: #fbbc04;
+    --error: #ea4335;
+    --shadow-sm: 0 1px 2px rgba(60,64,67,0.1);
+    --shadow: 0 1px 3px rgba(60,64,67,0.15), 0 1px 2px rgba(60,64,67,0.1);
+    --shadow-lg: 0 4px 12px rgba(60,64,67,0.15);
+    --radius: 8px;
+    --radius-sm: 4px;
+    --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
 * {
+    box-sizing: border-box;
     margin: 0;
     padding: 0;
-    box-sizing: border-box;
 }
 
 body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-family: var(--font);
+    font-size: 14px;
+    color: var(--text);
+    background: var(--bg-secondary);
+    line-height: 1.5;
     overflow: hidden;
 }
 
@@ -17,11 +44,34 @@ body {
     display: none !important;
 }
 
-/* --- Режим карты --- */
+/* ============================================
+   Buttons
+   ============================================ */
+
+button {
+    font-family: var(--font);
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    border: none;
+    border-radius: var(--radius-sm);
+    padding: 8px 16px;
+    transition: all 0.15s ease;
+}
+
+button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* ============================================
+   Map Mode
+   ============================================ */
+
 #map-mode {
+    position: relative;
     width: 100vw;
     height: 100vh;
-    position: relative;
 }
 
 #map {
@@ -33,82 +83,130 @@ body {
     position: absolute;
     top: 16px;
     left: 16px;
-    background: rgba(255, 255, 255, 0.95);
-    padding: 16px;
-    border-radius: 8px;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
-    min-width: 220px;
-    z-index: 100;
+    width: 280px;
+    background: var(--bg);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-lg);
+    padding: 20px;
+    z-index: 10;
 }
 
 #info-panel h3 {
+    font-size: 18px;
+    font-weight: 600;
     margin-bottom: 8px;
-    color: #333;
+    color: var(--text);
 }
 
-#info-panel p {
+#info-panel > p {
+    color: var(--text-secondary);
+    margin-bottom: 16px;
     font-size: 13px;
-    color: #666;
-    margin-bottom: 8px;
 }
 
-#selection-info {
-    font-family: 'Consolas', monospace;
-    font-size: 12px;
-    color: #333;
-    margin: 12px 0;
-    padding: 8px;
-    background: #f5f5f5;
-    border-radius: 4px;
-    min-height: 40px;
-}
-
-#load-btn {
+#info-panel button {
     width: 100%;
-    padding: 10px;
-    background: #4a90d9;
-    color: white;
-    border: none;
-    border-radius: 6px;
-    font-size: 14px;
-    cursor: pointer;
-    transition: background 0.2s;
-}
-
-#load-btn:hover:not(:disabled) {
-    background: #3a7bc8;
-}
-
-#load-btn:disabled {
-    background: #ccc;
-    cursor: not-allowed;
+    padding: 10px 16px;
+    margin-top: 8px;
 }
 
 #select-mode-btn {
-    width: 100%;
-    padding: 10px;
-    margin-bottom: 12px;
-    background: #28a745;
-    color: white;
-    border: none;
-    border-radius: 6px;
-    font-size: 14px;
-    cursor: pointer;
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
 }
 
 #select-mode-btn:hover {
-    background: #218838;
+    background: var(--bg-tertiary);
 }
 
 #select-mode-btn.active {
-    background: #dc3545;
+    background: var(--accent);
+    color: white;
+    border-color: var(--accent);
 }
 
-/* --- Режим 3D --- */
+#load-btn {
+    background: var(--accent);
+    color: white;
+}
+
+#load-btn:hover:not(:disabled) {
+    background: var(--accent-hover);
+}
+
+#selection-info {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+    line-height: 1.6;
+}
+
+#selection-info:empty {
+    display: none;
+    margin: 0;
+    padding: 0;
+    border: none;
+}
+
+/* ============================================
+   Area Selector (MapLibre)
+   ============================================ */
+
+.maplibregl-canvas-container.maplibregl-interactive.selection-active {
+    cursor: crosshair !important;
+}
+
+.maplibregl-ctrl-group {
+    background: var(--bg) !important;
+    border-radius: var(--radius) !important;
+    box-shadow: var(--shadow) !important;
+    border: none !important;
+}
+
+.maplibregl-ctrl-group button {
+    width: 32px !important;
+    height: 32px !important;
+    border: none !important;
+}
+
+.maplibregl-ctrl-group button:focus {
+    box-shadow: none !important;
+}
+
+.maplibregl-ctrl-zoom-in,
+.maplibregl-ctrl-zoom-out,
+.maplibregl-ctrl-compass {
+    background-color: var(--bg) !important;
+}
+
+.maplibregl-ctrl-zoom-in:hover,
+.maplibregl-ctrl-zoom-out:hover,
+.maplibregl-ctrl-compass:hover {
+    background-color: var(--bg-tertiary) !important;
+}
+
+.maplibregl-ctrl-attrib {
+    font-size: 10px;
+    background: rgba(255,255,255,0.8) !important;
+    padding: 2px 6px !important;
+}
+
+.maplibregl-ctrl-attrib a {
+    color: var(--text-secondary) !important;
+}
+
+/* ============================================
+   Scene Mode
+   ============================================ */
+
 #scene-mode {
+    position: relative;
     width: 100vw;
     height: 100vh;
-    position: relative;
+    background: #e8eaed;
 }
 
 #scene-container {
@@ -116,56 +214,44 @@ body {
     height: 100%;
 }
 
+#scene-container canvas {
+    display: block;
+}
+
 #scene-panel {
     position: absolute;
     top: 16px;
     left: 16px;
-    background: rgba(255, 255, 255, 0.95);
+    width: 200px;
+    background: var(--bg);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-lg);
     padding: 16px;
-    border-radius: 8px;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
-    min-width: 180px;
     z-index: 100;
 }
 
 #scene-panel h3 {
-    margin-bottom: 8px;
+    font-size: 15px;
+    font-weight: 600;
+    margin-bottom: 12px;
 }
 
 #scene-panel p {
     font-size: 13px;
+    color: var(--text-secondary);
     margin-bottom: 12px;
 }
 
-#back-btn {
-    width: 100%;
-    padding: 8px;
-    background: #666;
-    color: white;
-    border: none;
-    border-radius: 6px;
-    cursor: pointer;
+#scene-panel #building-count {
+    font-weight: 600;
+    color: var(--text);
 }
 
-#back-btn:hover {
-    background: #555;
-}
-
-/* --- Прямоугольник выбора на карте --- */
-.selection-rect {
-    position: absolute;
-    border: 2px dashed #4a90d9;
-    background: rgba(74, 144, 217, 0.1);
-    pointer-events: none;
-    z-index: 50;
-}
-
-/* --- Легенда --- */
 .legend {
     margin: 12px 0;
-    padding: 8px;
-    background: #f5f5f5;
-    border-radius: 4px;
+    padding: 12px 0;
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
 }
 
 .legend-item {
@@ -173,7 +259,8 @@ body {
     align-items: center;
     gap: 8px;
     font-size: 12px;
-    margin-bottom: 4px;
+    color: var(--text-secondary);
+    margin-bottom: 6px;
 }
 
 .legend-item:last-child {
@@ -181,9 +268,9 @@ body {
 }
 
 .legend-color {
-    width: 16px;
-    height: 16px;
-    border-radius: 3px;
+    width: 12px;
+    height: 12px;
+    border-radius: 2px;
 }
 
 .legend-color.residential {
@@ -194,23 +281,68 @@ body {
     background: #888888;
 }
 
+#back-btn {
+    width: 100%;
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    margin-top: 8px;
+}
 
+#back-btn:hover {
+    background: var(--bg-tertiary);
+}
 
+/* ============================================
+   Editor Toolbar
+   ============================================ */
 
+.editor-toolbar {
+    position: absolute;
+    top: 16px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    gap: 2px;
+    background: var(--bg);
+    padding: 4px;
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-lg);
+    z-index: 100;
+}
 
-/* --- Карточка здания --- */
+.editor-toolbar button {
+    padding: 8px 16px;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 13px;
+    border-radius: var(--radius-sm);
+}
+
+.editor-toolbar button:hover {
+    background: var(--bg-tertiary);
+    color: var(--text);
+}
+
+.editor-toolbar button.active {
+    background: var(--accent);
+    color: white;
+}
+
+/* ============================================
+   Building Card
+   ============================================ */
+
 #building-card {
     position: absolute;
     top: 16px;
     right: 16px;
-    background: rgba(255, 255, 255, 0.97);
-    padding: 0;
-    border-radius: 8px;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
-    min-width: 240px;
-    max-width: 300px;
-    z-index: 100;
+    width: 280px;
+    background: var(--bg);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-lg);
     overflow: hidden;
+    z-index: 100;
 }
 
 .card-header {
@@ -218,38 +350,37 @@ body {
     justify-content: space-between;
     align-items: center;
     padding: 12px 16px;
-    background: #4a90d9;
-    color: white;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
 }
 
 #card-title {
-    font-weight: 600;
     font-size: 14px;
+    font-weight: 600;
 }
 
 #card-close {
-    background: none;
-    border: none;
-    color: white;
-    font-size: 18px;
-    cursor: pointer;
-    padding: 0;
-    line-height: 1;
+    background: transparent;
+    color: var(--text-tertiary);
+    padding: 4px 8px;
+    font-size: 16px;
 }
 
 #card-close:hover {
-    opacity: 0.8;
+    color: var(--text);
+    background: var(--bg-tertiary);
 }
 
 .card-content {
-    padding: 12px 16px;
+    padding: 8px 16px;
 }
 
 .card-row {
     display: flex;
     justify-content: space-between;
-    padding: 6px 0;
-    border-bottom: 1px solid #eee;
+    align-items: center;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--bg-tertiary);
     font-size: 13px;
 }
 
@@ -258,131 +389,15 @@ body {
 }
 
 .card-label {
-    color: #666;
+    color: var(--text-secondary);
 }
 
-.card-row span:last-child {
+.card-row span:last-child:not(.card-label) {
     font-weight: 500;
-    color: #333;
+    color: var(--text);
     text-align: right;
 }
 
-/* Жилое здание — синяя шапка */
-#building-card.residential .card-header {
-    background: #5b8dd9;
-}
-
-/* Прочее — серая шапка */
-#building-card.other .card-header {
-    background: #666;
-}
-
-
-
-
-/* --- Height Editor --- */
-.height-label {
-    position: fixed;
-    background: rgba(255, 255, 255, 0.97);
-    color: #333;
-    padding: 8px 12px;
-    border-radius: 8px;
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    font-size: 15px;
-    z-index: 200;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    border: 2px solid #4a90d9;
-    box-shadow: 0 4px 16px rgba(74, 144, 217, 0.25);
-}
-
-.height-label.hidden {
-    display: none;
-}
-
-.height-label input {
-    width: 50px;
-    background: #f5f8fc;
-    border: 1px solid #d0dff0;
-    border-radius: 4px;
-    color: #333;
-    font-family: inherit;
-    font-size: 15px;
-    font-weight: 600;
-    text-align: center;
-    padding: 4px;
-    outline: none;
-    transition: border-color 0.2s, box-shadow 0.2s;
-}
-
-.height-label input:focus {
-    border-color: #4a90d9;
-    box-shadow: 0 0 0 3px rgba(74, 144, 217, 0.2);
-}
-
-.height-label span {
-    color: #666;
-    font-weight: 500;
-}
-
-.height-btn {
-    background: #4a90d9;
-    border: none;
-    color: white;
-    width: 32px;
-    height: 32px;
-    border-radius: 6px;
-    cursor: pointer;
-    font-size: 12px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: background 0.2s, transform 0.1s;
-    box-shadow: 0 2px 4px rgba(74, 144, 217, 0.3);
-}
-
-.height-btn:hover {
-    background: #3a7bc8;
-}
-
-.height-btn:active {
-    transform: scale(0.95);
-    background: #2d6ab5;
-}
-
-
-
-
-/* --- Card Actions --- */
-.card-actions {
-    padding: 12px 16px;
-    border-top: 1px solid #eee;
-}
-
-.card-actions button {
-    width: 100%;
-    padding: 8px 12px;
-    background: #4a90d9;
-    color: white;
-    border: none;
-    border-radius: 4px;
-    cursor: pointer;
-    font-size: 13px;
-}
-
-.card-actions button:hover {
-    background: #3a7bc8;
-}
-
-.card-actions button:disabled {
-    background: #ccc;
-    cursor: not-allowed;
-}
-
-
-
-/* --- Card Toggle --- */
 .card-toggle {
     display: flex;
     gap: 4px;
@@ -390,98 +405,415 @@ body {
 
 .toggle-btn {
     padding: 4px 10px;
-    border: 1px solid #d0dff0;
-    background: #f5f8fc;
-    color: #666;
     font-size: 12px;
-    border-radius: 4px;
-    cursor: pointer;
-    transition: all 0.2s;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
 }
 
 .toggle-btn:hover {
-    border-color: #4a90d9;
-    color: #4a90d9;
+    background: var(--border);
 }
 
 .toggle-btn.active {
-    background: #4a90d9;
-    border-color: #4a90d9;
+    background: var(--accent);
     color: white;
 }
 
-.toggle-btn.active.residential {
-    background: #5b8dd9;
-    border-color: #5b8dd9;
+.card-actions {
+    padding: 12px 16px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
 }
 
-.toggle-btn.active.other {
-    background: #888888;
-    border-color: #888888;
+.card-actions button {
+    width: 100%;
+    padding: 10px 14px;
+    font-size: 13px;
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
 }
 
+.card-actions button:hover {
+    background: var(--bg-tertiary);
+}
 
-/* --- Editor Toolbar --- */
-.editor-toolbar {
+.card-actions button.active {
+    background: var(--accent-light);
+    color: var(--accent);
+    border-color: var(--accent);
+}
+
+/* ============================================
+   Height Editor
+   ============================================ */
+
+.height-label {
+    position: absolute;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 8px 12px;
+    box-shadow: var(--shadow);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    z-index: 100;
+    pointer-events: auto;
+}
+
+.height-label input {
+    width: 60px;
+    padding: 6px 8px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    font-size: 13px;
+    text-align: center;
+    font-family: var(--font);
+}
+
+.height-label input:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.height-btn {
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    background: var(--bg-tertiary);
+    color: var(--text);
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.height-btn:hover {
+    background: var(--border);
+}
+
+/* ============================================
+   Insolation Results Panel
+   ============================================ */
+
+#insolation-results {
     position: absolute;
     top: 16px;
+    left: 232px;
+    width: 320px;
+    max-height: calc(100vh - 32px);
+    background: var(--bg);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-lg);
+    display: flex;
+    flex-direction: column;
+    opacity: 0;
+    transform: translateX(-10px);
+    transition: all 0.2s ease;
+    pointer-events: none;
+    z-index: 150;
+}
+
+#insolation-results.visible {
+    opacity: 1;
+    transform: translateX(0);
+    pointer-events: auto;
+}
+
+#insolation-results .panel-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 16px;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
+    border-radius: var(--radius) var(--radius) 0 0;
+}
+
+#insolation-results .panel-header span {
+    font-size: 14px;
+    font-weight: 600;
+}
+
+#insolation-results .panel-header button {
+    background: transparent;
+    color: var(--text-tertiary);
+    padding: 4px 8px;
+    font-size: 16px;
+}
+
+#insolation-results .panel-header button:hover {
+    color: var(--text);
+    background: var(--bg-tertiary);
+}
+
+#insolation-results .panel-content {
+    padding: 16px;
+    overflow-y: auto;
+    flex: 1;
+}
+
+.result-stats {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 16px;
+}
+
+.result-stats .stat {
+    flex: 1;
+    text-align: center;
+    padding: 12px 8px;
+    border-radius: var(--radius-sm);
+    background: var(--bg-secondary);
+}
+
+.result-stats .stat span {
+    display: block;
+    font-size: 24px;
+    font-weight: 600;
+    margin-bottom: 2px;
+}
+
+.result-stats .stat small {
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+
+.result-stats .stat.pass {
+    background: #e6f4ea;
+    color: var(--success);
+}
+
+.result-stats .stat.pass small {
+    color: var(--success);
+}
+
+.result-stats .stat.warning {
+    background: #fef7e0;
+    color: #b06000;
+}
+
+.result-stats .stat.warning small {
+    color: #b06000;
+}
+
+.result-stats .stat.fail {
+    background: #fce8e6;
+    color: var(--error);
+}
+
+.result-stats .stat.fail small {
+    color: var(--error);
+}
+
+.result-controls {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 16px;
+}
+
+.result-controls button {
+    flex: 1;
+    padding: 8px 12px;
+    font-size: 12px;
+    background: var(--bg);
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+}
+
+.result-controls button:hover {
+    background: var(--bg-tertiary);
+    color: var(--text);
+}
+
+.result-controls button.active {
+    background: var(--accent);
+    color: white;
+    border-color: var(--accent);
+}
+
+.results-list-header {
+    font-size: 12px;
+    color: var(--text-tertiary);
+    margin-bottom: 12px;
+}
+
+#insolation-details {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 300px;
+    overflow-y: auto;
+}
+
+.detail-item {
+    padding: 10px 12px;
+    border-radius: var(--radius-sm);
+    border-left: 3px solid var(--border);
+    cursor: pointer;
+    transition: all 0.15s ease;
+    background: var(--bg-secondary);
+}
+
+.detail-item:hover {
+    background: var(--bg-tertiary);
+}
+
+.detail-item.selected {
+    border-left-color: var(--accent);
+    background: var(--accent-light);
+}
+
+.detail-item.pass {
+    border-left-color: var(--success);
+}
+
+.detail-item.warning {
+    border-left-color: var(--warning);
+}
+
+.detail-item.fail {
+    border-left-color: var(--error);
+}
+
+.detail-item .title {
+    font-weight: 500;
+    font-size: 13px;
+    margin-bottom: 2px;
+}
+
+.detail-item .location {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    margin-bottom: 4px;
+}
+
+.detail-item .message {
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.detail-item .time {
+    font-size: 13px;
+    font-weight: 600;
+    margin-top: 6px;
+    color: var(--text);
+}
+
+/* ============================================
+   Draw Tool
+   ============================================ */
+
+.draw-hint {
+    position: absolute;
+    bottom: 24px;
     left: 50%;
     transform: translateX(-50%);
-    background: rgba(255, 255, 255, 0.97);
-    padding: 8px;
-    border-radius: 8px;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-    display: flex;
-    gap: 4px;
+    background: var(--bg);
+    padding: 10px 16px;
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-lg);
+    font-size: 13px;
+    color: var(--text-secondary);
     z-index: 100;
 }
 
-.editor-toolbar.hidden {
+/* ============================================
+   Scrollbar
+   ============================================ */
+
+::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: var(--text-tertiary);
+}
+
+/* ============================================
+   Panel Overlay (disabled)
+   ============================================ */
+
+.panel-overlay {
     display: none;
 }
 
-.tool-btn {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 2px;
-    padding: 8px 12px;
-    border: 1px solid #e0e0e0;
-    background: white;
-    border-radius: 6px;
-    cursor: pointer;
-    transition: all 0.2s;
-    min-width: 60px;
+/* ============================================
+   Responsive
+   ============================================ */
+
+@media (max-width: 768px) {
+    #info-panel,
+    #scene-panel {
+        width: calc(100vw - 32px);
+        left: 16px;
+        right: 16px;
+    }
+    
+    #building-card {
+        width: calc(100vw - 32px);
+        left: 16px;
+        right: 16px;
+        top: auto;
+        bottom: 16px;
+    }
+    
+    #insolation-results {
+        width: calc(100vw - 32px);
+        left: 16px;
+        top: auto;
+        bottom: 16px;
+        max-height: 50vh;
+    }
+    
+    .editor-toolbar {
+        width: calc(100vw - 32px);
+        left: 16px;
+        transform: none;
+    }
 }
 
-.tool-btn:hover {
-    background: #f5f8fc;
-    border-color: #4a90d9;
+
+/* ============================================
+   Area Selector Rectangle
+   ============================================ */
+
+.selection-rect {
+    position: absolute;
+    border: 2px solid var(--accent);
+    background: rgba(26, 115, 232, 0.15);
+    pointer-events: none;
+    z-index: 5;
+    box-sizing: border-box;
 }
 
-.tool-btn.active {
-    background: #4a90d9;
-    border-color: #4a90d9;
-    color: white;
+.selection-rect.hidden {
+    display: none;
 }
 
-.tool-btn.danger:hover {
-    background: #fee;
-    border-color: #e74c3c;
-    color: #e74c3c;
-}
-
-.tool-icon {
-    font-size: 18px;
-}
-
-.tool-label {
-    font-size: 11px;
-    font-weight: 500;
-}
-
-.tool-separator {
-    width: 1px;
-    background: #e0e0e0;
-    margin: 4px 8px;
+/* Resize handles (если понадобятся) */
+.selection-rect::before {
+    content: '';
+    position: absolute;
+    top: -4px;
+    left: -4px;
+    right: -4px;
+    bottom: -4px;
+    border: 1px dashed var(--accent);
+    opacity: 0.5;
+    pointer-events: none;
 }
