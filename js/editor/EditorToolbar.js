@@ -1,14 +1,13 @@
 /**
  * ============================================
  * EditorToolbar.js
- * Панель инструментов редактирования
+ * Панель инструментов (MVP)
  * ============================================
  */
 
 class EditorToolbar {
     constructor(options = {}) {
         this.currentTool = 'select';
-        this.tools = ['select', 'move', 'vertex', 'draw', 'delete'];
         
         this.onChange = options.onChange || (() => {});
         
@@ -26,14 +25,6 @@ class EditorToolbar {
                 <span class="tool-icon">↖</span>
                 <span class="tool-label">Выбор</span>
             </button>
-            <button class="tool-btn" data-tool="move" title="Перемещение (M)">
-                <span class="tool-icon">✥</span>
-                <span class="tool-label">Двигать</span>
-            </button>
-            <button class="tool-btn" data-tool="vertex" title="Вершины (E)">
-                <span class="tool-icon">⬡</span>
-                <span class="tool-label">Вершины</span>
-            </button>
             <button class="tool-btn" data-tool="draw" title="Рисовать (D)">
                 <span class="tool-icon">✏</span>
                 <span class="tool-label">Рисовать</span>
@@ -47,11 +38,10 @@ class EditorToolbar {
         
         document.getElementById('scene-mode').appendChild(this.element);
         
-        // Обработчики кнопок
+        // Обработчики
         this.element.querySelectorAll('.tool-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                const tool = btn.dataset.tool;
-                this.setTool(tool);
+            btn.addEventListener('click', () => {
+                this.setTool(btn.dataset.tool);
             });
         });
         
@@ -61,8 +51,6 @@ class EditorToolbar {
             
             switch(e.key.toLowerCase()) {
                 case 'v': this.setTool('select'); break;
-                case 'm': this.setTool('move'); break;
-                case 'e': this.setTool('vertex'); break;
                 case 'd': this.setTool('draw'); break;
                 case 'delete': this.setTool('delete'); break;
                 case 'escape': this.setTool('select'); break;
@@ -72,19 +60,18 @@ class EditorToolbar {
     
     setTool(tool) {
         if (tool === 'delete') {
-            // Delete — это действие, не инструмент
-            this.onChange('delete', null);
+            this.onChange('delete', this.currentTool);
             return;
         }
         
+        const prevTool = this.currentTool;
         this.currentTool = tool;
         
-        // Обновляем кнопки
         this.element.querySelectorAll('.tool-btn').forEach(btn => {
             btn.classList.toggle('active', btn.dataset.tool === tool);
         });
         
-        this.onChange(tool, this.currentTool);
+        this.onChange(tool, prevTool);
         
         console.log(`[EditorToolbar] Инструмент: ${tool}`);
     }

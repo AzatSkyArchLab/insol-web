@@ -419,3 +419,69 @@ body {
     background: #888888;
     border-color: #888888;
 }
+
+
+/* --- Editor Toolbar --- */
+.editor-toolbar {
+    position: absolute;
+    top: 16px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(255, 255, 255, 0.97);
+    padding: 8px;
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    display: flex;
+    gap: 4px;
+    z-index: 100;
+}
+
+.editor-toolbar.hidden {
+    display: none;
+}
+
+.tool-btn {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    padding: 8px 12px;
+    border: 1px solid #e0e0e0;
+    background: white;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.2s;
+    min-width: 60px;
+}
+
+.tool-btn:hover {
+    background: #f5f8fc;
+    border-color: #4a90d9;
+}
+
+.tool-btn.active {
+    background: #4a90d9;
+    border-color: #4a90d9;
+    color: white;
+}
+
+.tool-btn.danger:hover {
+    background: #fee;
+    border-color: #e74c3c;
+    color: #e74c3c;
+}
+
+.tool-icon {
+    font-size: 18px;
+}
+
+.tool-label {
+    font-size: 11px;
+    font-weight: 500;
+}
+
+.tool-separator {
+    width: 1px;
+    background: #e0e0e0;
+    margin: 4px 8px;
+}

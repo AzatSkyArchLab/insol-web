@@ -13,6 +13,10 @@ import { BuildingMesh } from './buildings/BuildingMesh.js';
 import { AreaSelector } from './editor/AreaSelector.js';
 import { SelectTool } from './editor/SelectTool.js';
 import { HeightEditor } from './editor/HeightEditor.js';
+import { EditorToolbar } from './editor/EditorToolbar.js';
+//import { MoveTool } from './editor/MoveTool.js'; Добавим это когда-нибудь потоооом :)
+//import { VertexEditor } from './editor/VertexEditor.js'; и это :)
+import { DrawTool } from './editor/DrawTool.js';
 
 console.log('=== Insol Web v0.1 ===');
 
@@ -31,6 +35,11 @@ let selectTool = null;
 let selectedBounds = null;
 let selectModeActive = false;
 let heightEditor = null;
+
+let editorToolbar = null;
+//let moveTool = null;
+//let vertexEditor = null;
+let drawTool = null;
 
 // ============================================
 // Инициализация
@@ -316,7 +325,25 @@ async function onLoadClick() {
         }
     });
 
-    window.heightEditor = heightEditor;
+        // Панель инструментов
+
+    editorToolbar = new EditorToolbar({
+        onChange: onToolChange
+    });
+
+    // Инструмент рисования
+    drawTool = new DrawTool(sceneManager, coords, {
+        onCreate: (mesh) => {
+            console.log(`[App] Создан полигон: ${mesh.userData.id}`);
+            // Переключаемся на выбор и выделяем созданное здание
+            editorToolbar.setTool('select');
+            selectTool.select(mesh);
+            showBuildingCard(mesh.userData);
+        }
+    });
+
+    window.editorToolbar = editorToolbar;
+    window.drawTool = drawTool;
 
     
     // Статистика
@@ -337,29 +364,79 @@ async function onLoadClick() {
 // Возврат к карте
 // ============================================
 
-function onBackClick() {
-    document.getElementById('scene-mode').classList.add('hidden');
-    document.getElementById('map-mode').classList.remove('hidden');
-    
-    // Закрываем карточку
-    closeBuildingCard();
-    
-    // Сброс UI
-    const btn = document.getElementById('select-mode-btn');
-    btn.textContent = '✎ Изменить область';
-    btn.classList.remove('active');
-    selectModeActive = false;
-    
-    if (areaSelector) {
-        areaSelector.disableDrawing();
+    function onBackClick() {
+        document.getElementById('scene-mode').classList.add('hidden');
+        document.getElementById('map-mode').classList.remove('hidden');
+        
+        // Закрываем карточку
+        closeBuildingCard();
+        
+        // Сброс UI
+        const btn = document.getElementById('select-mode-btn');
+        btn.textContent = '✎ Изменить область';
+        btn.classList.remove('active');
+        selectModeActive = false;
+        
+        if (areaSelector) {
+            areaSelector.disableDrawing();
+        }
+        
+        const loadBtn = document.getElementById('load-btn');
+        loadBtn.textContent = 'Обновить область';
+        updateLoadButton();
+        
+        console.log('[App] Возврат к карте');
     }
-    
-    const loadBtn = document.getElementById('load-btn');
-    loadBtn.textContent = 'Обновить область';
-    updateLoadButton();
-    
-    console.log('[App] Возврат к карте');
-}
+
+
+    function onToolChange(tool, prevTool) {
+        // Отключаем инструменты
+        if (drawTool) drawTool.disable();
+        if (heightEditor) heightEditor.deactivate();
+        
+        // Включаем выбранный
+        switch(tool) {
+            case 'select':
+                // SelectTool всегда активен
+                break;
+            case 'draw':
+                if (selectTool) selectTool.deselect();
+                closeBuildingCard();
+                drawTool.enable();
+                break;
+            case 'delete':
+                deleteSelectedBuilding();
+                break;
+        }
+    }
+
+    function deleteSelectedBuilding() {
+        if (!selectTool) {
+            console.warn('[App] SelectTool не инициализирован');
+            return;
+        }
+        
+        const mesh = selectTool.getSelected();
+        console.log('[App] Попытка удаления, выбрано:', mesh);
+        
+        if (!mesh) {
+            alert('Сначала выберите здание (инструмент "Выбор")');
+            return;
+        }
+        
+        if (confirm(`Удалить здание ${mesh.userData.id}?`)) {
+            const group = sceneManager.getBuildingsGroup();
+            group.remove(mesh);
+            mesh.geometry.dispose();
+            mesh.material.dispose();
+            
+            selectTool.deselect();
+            closeBuildingCard();
+            
+            console.log(`[App] Удалено: ${mesh.userData.id}`);
+        }
+    }
+
 
 // ============================================
 // Запуск
