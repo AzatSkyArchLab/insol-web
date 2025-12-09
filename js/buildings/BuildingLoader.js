@@ -1,103 +1,122 @@
 /**
  * ============================================
  * BuildingLoader.js
- * Загрузка зданий из OpenStreetMap (Overpass API)
+ * Загрузка зданий из OpenStreetMap
  * ============================================
  */
 
 class BuildingLoader {
     constructor() {
-        // Overpass API endpoint
-        this.overpassUrl = 'https://overpass-api.de/api/interpreter';
+        this.overpassServers = [
+            'https://overpass-api.de/api/interpreter',
+            'https://overpass.kumi.systems/api/interpreter',
+            'https://maps.mail.ru/osm/tools/overpass/api/interpreter'
+        ];
+        this.currentServer = 0;
+        
+        // Буфер расширения bbox (в метрах)
+        this.bufferMeters = 100;
         
         console.log('[BuildingLoader] Создан');
     }
     
     /**
-     * Загрузить здания в указанном bbox
-     * @param {number} south - Южная граница (lat)
-     * @param {number} west - Западная граница (lon)
-     * @param {number} north - Северная граница (lat)
-     * @param {number} east - Восточная граница (lon)
-     * @returns {Promise<Array>} - Массив зданий в формате GeoJSON-like
+     * Загрузить здания с буфером
+     * @param {number} south 
+     * @param {number} west 
+     * @param {number} north 
+     * @param {number} east 
+     * @param {Object} options - { buffer: true/false }
      */
-    async loadBuildings(south, west, north, east) {
-        console.log(`[BuildingLoader] Загрузка зданий: ${south.toFixed(4)}, ${west.toFixed(4)} → ${north.toFixed(4)}, ${east.toFixed(4)}`);
+    async loadBuildings(south, west, north, east, options = {}) {
+        const useBuffer = options.buffer !== false; // По умолчанию true
         
-        // Overpass QL запрос
+        let querySouth = south;
+        let queryWest = west;
+        let queryNorth = north;
+        let queryEast = east;
+        
+        // Расширяем bbox для захвата пограничных зданий
+        if (useBuffer) {
+            const centerLat = (south + north) / 2;
+            const latBuffer = this.bufferMeters / 111320;
+            const lonBuffer = this.bufferMeters / (111320 * Math.cos(centerLat * Math.PI / 180));
+            
+            querySouth = south - latBuffer;
+            queryNorth = north + latBuffer;
+            queryWest = west - lonBuffer;
+            queryEast = east + lonBuffer;
+            
+            console.log(`[BuildingLoader] Буфер: +${this.bufferMeters}м`);
+        }
+        
+        console.log(`[BuildingLoader] Загрузка: ${querySouth.toFixed(5)}, ${queryWest.toFixed(5)} → ${queryNorth.toFixed(5)}, ${queryEast.toFixed(5)}`);
+        
+        // Запрос с полной геометрией (out geom)
         const query = `
-            [out:json][timeout:30];
-            (
-                way["building"](${south},${west},${north},${east});
-                relation["building"](${south},${west},${north},${east});
-            );
-            out body;
-            >;
-            out skel qt;
+            [out:json][timeout:60];
+            way["building"](${querySouth},${queryWest},${queryNorth},${queryEast});
+            out body geom;
         `;
         
-        try {
-            const response = await fetch(this.overpassUrl, {
-                method: 'POST',
-                body: `data=${encodeURIComponent(query)}`,
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded'
+        for (let attempt = 0; attempt < 3; attempt++) {
+            const server = this.overpassServers[this.currentServer];
+            
+            try {
+                console.log(`[BuildingLoader] Попытка ${attempt + 1}, сервер: ${server}`);
+                
+                const controller = new AbortController();
+                const timeout = setTimeout(() => controller.abort(), 30000);
+                
+                const response = await fetch(server, {
+                    method: 'POST',
+                    body: `data=${encodeURIComponent(query)}`,
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    signal: controller.signal
+                });
+                
+                clearTimeout(timeout);
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
                 }
-            });
-            
-            if (!response.ok) {
-                throw new Error(`HTTP ${response.status}`);
+                
+                const data = await response.json();
+                const buildings = this._parseResponseWithGeom(data);
+                
+                // Фильтруем — оставляем только те, что пересекают исходный bbox
+                const filtered = this._filterByIntersection(buildings, south, west, north, east);
+                
+                console.log(`[BuildingLoader] Загружено: ${buildings.length}, после фильтра: ${filtered.length}`);
+                return filtered;
+                
+            } catch (error) {
+                console.warn(`[BuildingLoader] Ошибка: ${error.message}`);
+                this.currentServer = (this.currentServer + 1) % this.overpassServers.length;
             }
-            
-            const data = await response.json();
-            const buildings = this._parseResponse(data);
-            
-            console.log(`[BuildingLoader] Загружено зданий: ${buildings.length}`);
-            return buildings;
-            
-        } catch (error) {
-            console.error('[BuildingLoader] Ошибка загрузки:', error);
-            return [];
         }
+        
+        console.error('[BuildingLoader] Все попытки исчерпаны');
+        return [];
     }
     
     /**
-     * Парсинг ответа Overpass API
+     * Парсинг ответа с геометрией (out geom)
      */
-    _parseResponse(data) {
-        const nodes = {};
+    _parseResponseWithGeom(data) {
         const buildings = [];
         
-        // Сначала собираем все узлы (точки)
         for (const element of data.elements) {
-            if (element.type === 'node') {
-                nodes[element.id] = {
-                    lat: element.lat,
-                    lon: element.lon
-                };
-            }
-        }
-        
-        // Затем собираем здания (ways)
-        for (const element of data.elements) {
-            if (element.type === 'way' && element.nodes) {
-                const coordinates = [];
+            if (element.type === 'way' && element.geometry) {
+                const coordinates = element.geometry.map(node => [node.lon, node.lat]);
                 
-                for (const nodeId of element.nodes) {
-                    const node = nodes[nodeId];
-                    if (node) {
-                        coordinates.push([node.lon, node.lat]);
-                    }
-                }
-                
-                if (coordinates.length >= 3) {
-                    const building = {
+                if (coordinates.length >= 4) {
+                    buildings.push({
                         id: element.id,
                         type: 'way',
                         coordinates: coordinates,
                         properties: this._extractProperties(element.tags)
-                    };
-                    buildings.push(building);
+                    });
                 }
             }
         }
@@ -106,23 +125,54 @@ class BuildingLoader {
     }
     
     /**
-     * Извлечение свойств здания из тегов OSM
+     * Фильтр — оставляем здания, пересекающие область
      */
+    _filterByIntersection(buildings, south, west, north, east) {
+        return buildings.filter(building => {
+            // Проверяем — хотя бы одна вершина внутри bbox
+            // ИЛИ bbox здания пересекает наш bbox
+            
+            let minLat = Infinity, maxLat = -Infinity;
+            let minLon = Infinity, maxLon = -Infinity;
+            let hasPointInside = false;
+            
+            for (const coord of building.coordinates) {
+                const lon = coord[0];
+                const lat = coord[1];
+                
+                minLat = Math.min(minLat, lat);
+                maxLat = Math.max(maxLat, lat);
+                minLon = Math.min(minLon, lon);
+                maxLon = Math.max(maxLon, lon);
+                
+                if (lat >= south && lat <= north && lon >= west && lon <= east) {
+                    hasPointInside = true;
+                }
+            }
+            
+            // Хотя бы одна точка внутри — берём здание
+            if (hasPointInside) {
+                return true;
+            }
+            
+            // Или bbox'ы пересекаются (здание может пересекать область без точек внутри)
+            const bboxIntersects = !(maxLat < south || minLat > north || maxLon < west || minLon > east);
+            
+            return bboxIntersects;
+        });
+    }
+    
     _extractProperties(tags = {}) {
-        // Высота здания
         let height = null;
         
         if (tags.height) {
-            // Парсим "25" или "25m" или "25 m"
             height = parseFloat(tags.height);
         } else if (tags['building:levels']) {
-            // 1 этаж ≈ 3 метра
             height = parseFloat(tags['building:levels']) * 3;
         }
         
-        // Если высота не указана — дефолт 10м
-        if (!height || isNaN(height)) {
-            height = 10;
+        if (!height || isNaN(height) || height < 2) {
+            height = 9;
         }
         
         return {
@@ -131,28 +181,6 @@ class BuildingLoader {
             name: tags.name || null,
             buildingType: tags.building || 'yes'
         };
-    }
-    
-    /**
-     * Загрузить здания по центру и радиусу (в метрах)
-     * @param {number} centerLat
-     * @param {number} centerLon
-     * @param {number} radiusMeters - Радиус в метрах (макс 250 = область 500x500)
-     */
-    async loadBuildingsAround(centerLat, centerLon, radiusMeters = 150) {
-        // Ограничение по ТЗ
-        radiusMeters = Math.min(radiusMeters, 250);
-        
-        // Конвертация метров в градусы (приблизительно)
-        const latOffset = radiusMeters / 111000;
-        const lonOffset = radiusMeters / (111000 * Math.cos(centerLat * Math.PI / 180));
-        
-        const south = centerLat - latOffset;
-        const north = centerLat + latOffset;
-        const west = centerLon - lonOffset;
-        const east = centerLon + lonOffset;
-        
-        return this.loadBuildings(south, west, north, east);
     }
 }
 

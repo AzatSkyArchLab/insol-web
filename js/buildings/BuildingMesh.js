@@ -1,7 +1,7 @@
 /**
  * ============================================
  * BuildingMesh.js
- * Создание 3D-мешей зданий (с earcut триангуляцией)
+ * Создание 3D-мешей зданий
  * ============================================
  */
 
@@ -12,7 +12,8 @@ class BuildingMesh {
         this.defaultMaterial = new THREE.MeshLambertMaterial({
             color: 0x4a90d9,
             transparent: true,
-            opacity: 0.9
+            opacity: 0.9,
+            side: THREE.DoubleSide // Видно с обеих сторон
         });
         
         console.log('[BuildingMesh] Создан');
@@ -31,30 +32,27 @@ class BuildingMesh {
             return { x: meters.x, y: meters.y };
         });
         
-        // Убираем дубликат последней точки
-        if (points.length > 1) {
-            const first = points[0];
-            const last = points[points.length - 1];
-            const dist = Math.sqrt((first.x - last.x) ** 2 + (first.y - last.y) ** 2);
-            if (dist < 0.1) {
-                points.pop();
-            }
-        }
+        // Очистка геометрии
+        points = this._cleanPolygon(points);
         
         if (points.length < 3) {
             return null;
         }
         
-        // Убираем дублирующиеся подряд точки
-        points = this._removeDuplicatePoints(points);
-        
-        if (points.length < 3) {
+        // Проверяем площадь — если слишком маленькая, пропускаем
+        const area = this._signedArea(points);
+        if (Math.abs(area) < 1) { // меньше 1 кв.м
             return null;
+        }
+        
+        // Обеспечиваем правильную ориентацию (против часовой стрелки)
+        // Для Three.js/earcut нужна положительная площадь (CCW)
+        if (area < 0) {
+            points.reverse();
         }
         
         try {
-            // Создаём геометрию вручную через earcut
-            const geometry = this._createExtrudedGeometry(points, height);
+            const geometry = this._createBuildingGeometry(points, height);
             
             if (!geometry) {
                 return null;
@@ -71,102 +69,176 @@ class BuildingMesh {
             return mesh;
             
         } catch (e) {
+            console.warn(`[BuildingMesh] Ошибка здания ${building.id}:`, e.message);
             return null;
         }
     }
     
     /**
-     * Создаём экструдированную геометрию вручную
+     * Очистка полигона от проблемных точек
      */
-    _createExtrudedGeometry(points, height) {
-        // Плоский массив координат для earcut
+    _cleanPolygon(points) {
+        if (points.length < 3) return points;
+        
+        let result = [];
+        
+        // 1. Убираем дубликат последней точки (замыкание)
+        const first = points[0];
+        const last = points[points.length - 1];
+        if (this._distance(first, last) < 0.1) {
+            points = points.slice(0, -1);
+        }
+        
+        // 2. Убираем подряд идущие дубликаты
+        for (let i = 0; i < points.length; i++) {
+            const curr = points[i];
+            const prev = result.length > 0 ? result[result.length - 1] : null;
+            
+            if (!prev || this._distance(curr, prev) > 0.1) {
+                result.push(curr);
+            }
+        }
+        
+        // 3. Убираем коллинеарные точки (точки на одной линии)
+        result = this._removeCollinearPoints(result);
+        
+        return result;
+    }
+    
+    /**
+     * Убираем точки, лежащие на одной линии с соседями
+     */
+    _removeCollinearPoints(points) {
+        if (points.length < 3) return points;
+        
+        const result = [];
+        const n = points.length;
+        
+        for (let i = 0; i < n; i++) {
+            const prev = points[(i - 1 + n) % n];
+            const curr = points[i];
+            const next = points[(i + 1) % n];
+            
+            // Проверяем коллинеарность через cross product
+            const cross = (curr.x - prev.x) * (next.y - prev.y) - 
+                          (curr.y - prev.y) * (next.x - prev.x);
+            
+            if (Math.abs(cross) > 0.01) { // Не коллинеарны
+                result.push(curr);
+            }
+        }
+        
+        return result;
+    }
+    
+    /**
+     * Расстояние между точками
+     */
+    _distance(p1, p2) {
+        return Math.sqrt((p1.x - p2.x) ** 2 + (p1.y - p2.y) ** 2);
+    }
+    
+    /**
+     * Знаковая площадь полигона (Shoelace formula)
+     * Положительная = против часовой стрелки (CCW)
+     * Отрицательная = по часовой стрелке (CW)
+     */
+    _signedArea(points) {
+        let area = 0;
+        const n = points.length;
+        
+        for (let i = 0; i < n; i++) {
+            const j = (i + 1) % n;
+            area += points[i].x * points[j].y;
+            area -= points[j].x * points[i].y;
+        }
+        
+        return area / 2;
+    }
+    
+    /**
+     * Создание геометрии здания
+     */
+    _createBuildingGeometry(points, height) {
+        const n = points.length;
+        
+        // Плоский массив для earcut
         const flatCoords = [];
         for (const p of points) {
             flatCoords.push(p.x, p.y);
         }
         
-        // Триангуляция основания
+        // Триангуляция
         const triangles = earcut(flatCoords);
         
         if (triangles.length < 3) {
             return null;
         }
         
+        // Проверяем что триангуляция валидна
+        if (triangles.length % 3 !== 0) {
+            return null;
+        }
+        
         const vertices = [];
         const indices = [];
         
-        const n = points.length;
+        // === ВЕРШИНЫ ===
         
-        // Нижняя грань (z = 0)
+        // Нижние вершины (индексы 0 .. n-1)
         for (const p of points) {
             vertices.push(p.x, p.y, 0);
         }
         
-        // Верхняя грань (z = height)
+        // Верхние вершины (индексы n .. 2n-1)
         for (const p of points) {
             vertices.push(p.x, p.y, height);
         }
         
-        // Индексы нижней грани (перевёрнутые для правильной нормали)
+        // === ИНДЕКСЫ ГРАНЕЙ ===
+        
+        // Нижняя грань (нормаль вниз, меняем порядок)
         for (let i = 0; i < triangles.length; i += 3) {
             indices.push(triangles[i], triangles[i + 2], triangles[i + 1]);
         }
         
-        // Индексы верхней грани
+        // Верхняя грань (нормаль вверх)
         for (let i = 0; i < triangles.length; i += 3) {
-            indices.push(triangles[i] + n, triangles[i + 1] + n, triangles[i + 2] + n);
+            indices.push(
+                triangles[i] + n,
+                triangles[i + 1] + n,
+                triangles[i + 2] + n
+            );
         }
         
         // Боковые грани
-        const wallStartIndex = vertices.length / 3;
+        // Добавляем отдельные вершины для каждой стены (для корректных нормалей)
+        const wallBaseIndex = vertices.length / 3;
         
         for (let i = 0; i < n; i++) {
-            const i1 = i;
-            const i2 = (i + 1) % n;
+            const p1 = points[i];
+            const p2 = points[(i + 1) % n];
             
-            const p1 = points[i1];
-            const p2 = points[i2];
+            const idx = wallBaseIndex + i * 4;
             
-            // 4 вершины стены
-            const baseIdx = wallStartIndex + i * 4;
+            // 4 вершины стены: низ-слева, низ-справа, верх-справа, верх-слева
+            vertices.push(p1.x, p1.y, 0);       // idx + 0
+            vertices.push(p2.x, p2.y, 0);       // idx + 1
+            vertices.push(p2.x, p2.y, height);  // idx + 2
+            vertices.push(p1.x, p1.y, height);  // idx + 3
             
-            vertices.push(p1.x, p1.y, 0);      // 0: низ-лево
-            vertices.push(p2.x, p2.y, 0);      // 1: низ-право
-            vertices.push(p2.x, p2.y, height); // 2: верх-право
-            vertices.push(p1.x, p1.y, height); // 3: верх-лево
-            
-            // Два треугольника стены
-            indices.push(baseIdx, baseIdx + 1, baseIdx + 2);
-            indices.push(baseIdx, baseIdx + 2, baseIdx + 3);
+            // Два треугольника (CCW для внешней нормали)
+            indices.push(idx + 0, idx + 1, idx + 2);
+            indices.push(idx + 0, idx + 2, idx + 3);
         }
         
-        // Создаём BufferGeometry
+        // Создаём геометрию
         const geometry = new THREE.BufferGeometry();
-        
         geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
         geometry.setIndex(indices);
         geometry.computeVertexNormals();
         
         return geometry;
-    }
-    
-    /**
-     * Убираем дублирующиеся подряд точки
-     */
-    _removeDuplicatePoints(points) {
-        const result = [points[0]];
-        
-        for (let i = 1; i < points.length; i++) {
-            const prev = result[result.length - 1];
-            const curr = points[i];
-            const dist = Math.sqrt((curr.x - prev.x) ** 2 + (curr.y - prev.y) ** 2);
-            
-            if (dist > 0.1) {
-                result.push(curr);
-            }
-        }
-        
-        return result;
     }
     
     createMeshes(buildings) {
@@ -182,11 +254,7 @@ class BuildingMesh {
             }
         }
         
-        if (errors > 0) {
-            console.log(`[BuildingMesh] Пропущено зданий: ${errors}`);
-        }
-        
-        console.log(`[BuildingMesh] Создано мешей: ${meshes.length}`);
+        console.log(`[BuildingMesh] Создано: ${meshes.length}, пропущено: ${errors}`);
         return meshes;
     }
     
