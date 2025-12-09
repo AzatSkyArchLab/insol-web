@@ -8,8 +8,12 @@
     <link rel="stylesheet" href="css/main.css">
     <link href="https://unpkg.com/maplibre-gl@4.5.0/dist/maplibre-gl.css" rel="stylesheet" />
     <script src="https://unpkg.com/maplibre-gl@4.5.0/dist/maplibre-gl.js"></script>
+    
     <!-- Earcut для триангуляции полигонов -->
     <script src="https://cdn.jsdelivr.net/npm/earcut@2.2.4/dist/earcut.min.js"></script>
+    
+    <!-- OSM to GeoJSON -->
+    <script src="https://cdn.jsdelivr.net/npm/osmtogeojson@3.0.0-beta.5/osmtogeojson.js"></script>
     
     <!-- Three.js r128 (стабильная версия с OrbitControls) -->
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
@@ -32,14 +36,71 @@
         </div>
     </div>
     
-    <!-- Режим 2: 3D-сцена -->
+        <!-- Режим 2: 3D-сцена -->
     <div id="scene-mode" class="hidden">
         <div id="scene-container"></div>
         
         <div id="scene-panel">
             <h3>3D Модель</h3>
             <p>Зданий: <span id="building-count">0</span></p>
+            
+            <div class="legend">
+                <div class="legend-item">
+                    <span class="legend-color residential"></span>
+                    Жилые
+                </div>
+                <div class="legend-item">
+                    <span class="legend-color other"></span>
+                    Прочие
+                </div>
+            </div>
+            
             <button id="back-btn">← Назад к карте</button>
+        </div>
+        
+        <!-- Карточка здания -->
+        <div id="building-card" class="hidden">
+            <div class="card-header">
+                <span id="card-title">Здание</span>
+                <button id="card-close">✕</button>
+            </div>
+
+            <div class="card-content">
+                <div class="card-row">
+                    <span class="card-label">Тип:</span>
+                    <span id="card-type">—</span>
+                </div>
+
+                <div class="card-row">
+                    <span class="card-label">Функция:</span>
+                    <span id="card-function">—</span>
+                </div>
+
+                <div class="card-row">
+                    <span class="card-label">Этажей:</span>
+                    <span id="card-levels">—</span>
+                </div>
+
+                <div class="card-row">
+                    <span class="card-label">Высота:</span>
+                    <span id="card-height">—</span>
+                </div>
+
+                <div class="card-row">
+                    <span class="card-label">Источник:</span>
+                    <span id="card-height-source">—</span>
+                </div>
+
+                <div class="card-row">
+                    <span class="card-label">Адрес:</span>
+                    <span id="card-address">—</span>
+                </div>
+
+                <div class="card-row">
+                    <span class="card-label">OSM ID:</span>
+                    <span id="card-osm-id">—</span>
+                </div>
+            </div>
         </div>
     </div>
     

@@ -1,7 +1,7 @@
 /**
  * ============================================
  * BuildingLoader.js
- * Загрузка зданий из OpenStreetMap
+ * Загрузка зданий из OSM (через osmtogeojson)
  * ============================================
  */
 
@@ -13,30 +13,19 @@ class BuildingLoader {
             'https://maps.mail.ru/osm/tools/overpass/api/interpreter'
         ];
         this.currentServer = 0;
-        
-        // Буфер расширения bbox (в метрах)
         this.bufferMeters = 100;
         
         console.log('[BuildingLoader] Создан');
     }
     
-    /**
-     * Загрузить здания с буфером
-     * @param {number} south 
-     * @param {number} west 
-     * @param {number} north 
-     * @param {number} east 
-     * @param {Object} options - { buffer: true/false }
-     */
     async loadBuildings(south, west, north, east, options = {}) {
-        const useBuffer = options.buffer !== false; // По умолчанию true
+        const useBuffer = options.buffer !== false;
         
         let querySouth = south;
         let queryWest = west;
         let queryNorth = north;
         let queryEast = east;
         
-        // Расширяем bbox для захвата пограничных зданий
         if (useBuffer) {
             const centerLat = (south + north) / 2;
             const latBuffer = this.bufferMeters / 111320;
@@ -52,11 +41,16 @@ class BuildingLoader {
         
         console.log(`[BuildingLoader] Загрузка: ${querySouth.toFixed(5)}, ${queryWest.toFixed(5)} → ${queryNorth.toFixed(5)}, ${queryEast.toFixed(5)}`);
         
-        // Запрос с полной геометрией (out geom)
+        // Запрос возвращает JSON для osmtogeojson
         const query = `
             [out:json][timeout:60];
-            way["building"](${querySouth},${queryWest},${queryNorth},${queryEast});
-            out body geom;
+            (
+                way["building"](${querySouth},${queryWest},${queryNorth},${queryEast});
+                relation["building"](${querySouth},${queryWest},${queryNorth},${queryEast});
+            );
+            out body;
+            >;
+            out skel qt;
         `;
         
         for (let attempt = 0; attempt < 3; attempt++) {
@@ -81,13 +75,18 @@ class BuildingLoader {
                     throw new Error(`HTTP ${response.status}`);
                 }
                 
-                const data = await response.json();
-                const buildings = this._parseResponseWithGeom(data);
+                const osmData = await response.json();
                 
-                // Фильтруем — оставляем только те, что пересекают исходный bbox
+                // Конвертируем через osmtogeojson
+                const geojson = osmtogeojson(osmData);
+                
+                // Парсим GeoJSON в наш формат
+                const buildings = this._parseGeoJSON(geojson);
+                
+                // Фильтруем
                 const filtered = this._filterByIntersection(buildings, south, west, north, east);
                 
-                console.log(`[BuildingLoader] Загружено: ${buildings.length}, после фильтра: ${filtered.length}`);
+                console.log(`[BuildingLoader] GeoJSON features: ${geojson.features.length}, зданий: ${filtered.length}`);
                 return filtered;
                 
             } catch (error) {
@@ -101,22 +100,52 @@ class BuildingLoader {
     }
     
     /**
-     * Парсинг ответа с геометрией (out geom)
+     * Парсинг GeoJSON от osmtogeojson
      */
-    _parseResponseWithGeom(data) {
+    _parseGeoJSON(geojson) {
         const buildings = [];
         
-        for (const element of data.elements) {
-            if (element.type === 'way' && element.geometry) {
-                const coordinates = element.geometry.map(node => [node.lon, node.lat]);
+        for (const feature of geojson.features) {
+            const geom = feature.geometry;
+            const props = feature.properties;
+            
+            // Пропускаем не-здания и точки
+            if (!props.building) continue;
+            if (geom.type !== 'Polygon' && geom.type !== 'MultiPolygon') continue;
+            
+            const osmId = feature.id || props.id || `unknown-${buildings.length}`;
+            const buildingProps = this._extractProperties(props);
+            
+            if (geom.type === 'Polygon') {
+                // Polygon: первое кольцо — outer, остальные — holes
+                const outer = geom.coordinates[0];
+                const holes = geom.coordinates.slice(1);
                 
-                if (coordinates.length >= 4) {
+                if (outer && outer.length >= 4) {
                     buildings.push({
-                        id: element.id,
-                        type: 'way',
-                        coordinates: coordinates,
-                        properties: this._extractProperties(element.tags)
+                        id: osmId,
+                        type: 'polygon',
+                        coordinates: outer,
+                        holes: holes.filter(h => h && h.length >= 4),
+                        properties: buildingProps
                     });
+                }
+            } else if (geom.type === 'MultiPolygon') {
+                // MultiPolygon: несколько полигонов, каждый со своими дырками
+                for (let i = 0; i < geom.coordinates.length; i++) {
+                    const polygon = geom.coordinates[i];
+                    const outer = polygon[0];
+                    const holes = polygon.slice(1);
+                    
+                    if (outer && outer.length >= 4) {
+                        buildings.push({
+                            id: `${osmId}-${i}`,
+                            type: 'multipolygon',
+                            coordinates: outer,
+                            holes: holes.filter(h => h && h.length >= 4),
+                            properties: buildingProps
+                        });
+                    }
                 }
             }
         }
@@ -124,14 +153,8 @@ class BuildingLoader {
         return buildings;
     }
     
-    /**
-     * Фильтр — оставляем здания, пересекающие область
-     */
     _filterByIntersection(buildings, south, west, north, east) {
         return buildings.filter(building => {
-            // Проверяем — хотя бы одна вершина внутри bbox
-            // ИЛИ bbox здания пересекает наш bbox
-            
             let minLat = Infinity, maxLat = -Infinity;
             let minLon = Infinity, maxLon = -Infinity;
             let hasPointInside = false;
@@ -150,39 +173,52 @@ class BuildingLoader {
                 }
             }
             
-            // Хотя бы одна точка внутри — берём здание
-            if (hasPointInside) {
-                return true;
-            }
+            if (hasPointInside) return true;
             
-            // Или bbox'ы пересекаются (здание может пересекать область без точек внутри)
-            const bboxIntersects = !(maxLat < south || minLat > north || maxLon < west || minLon > east);
-            
-            return bboxIntersects;
+            return !(maxLat < south || minLat > north || maxLon < west || minLon > east);
         });
     }
     
-    _extractProperties(tags = {}) {
+    _extractProperties(props) {
         let height = null;
+        let levels = null;
         
-        if (tags.height) {
-            height = parseFloat(tags.height);
-        } else if (tags['building:levels']) {
-            height = parseFloat(tags['building:levels']) * 3;
+        if (props['building:levels']) {
+            levels = parseInt(props['building:levels']);
+        }
+        
+        if (props.height) {
+            const heightStr = String(props.height).replace(/[^\d.]/g, '');
+            height = parseFloat(heightStr);
         }
         
         if (!height || isNaN(height) || height < 2) {
-            height = 9;
+            if (levels && levels > 0) {
+                height = levels * 3;
+            } else {
+                height = 9;
+            }
         }
+        
+        const buildingTag = props.building || 'yes';
+        const residentialTypes = [
+            'apartments', 'residential', 'house', 'detached', 
+            'semidetached_house', 'terrace', 'dormitory'
+        ];
         
         return {
             height: height,
-            levels: tags['building:levels'] ? parseInt(tags['building:levels']) : null,
-            name: tags.name || null,
-            buildingType: tags.building || 'yes'
+            levels: levels,
+            name: props.name || null,
+            buildingType: buildingTag,
+            isResidential: residentialTypes.includes(buildingTag),
+            address: props['addr:street'] ? 
+                `${props['addr:street']} ${props['addr:housenumber'] || ''}`.trim() : null,
+            heightSource: props.height ? 'osm' : (levels ? 'levels' : 'default')
         };
     }
 }
 
 export { BuildingLoader };
 window.BuildingLoader = BuildingLoader;
+window.osmtogeojson = osmtogeojson;

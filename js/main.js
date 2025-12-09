@@ -11,6 +11,7 @@ import { SceneManager } from './core/SceneManager.js';
 import { BuildingLoader } from './buildings/BuildingLoader.js';
 import { BuildingMesh } from './buildings/BuildingMesh.js';
 import { AreaSelector } from './editor/AreaSelector.js';
+import { SelectTool } from './editor/SelectTool.js';
 
 console.log('=== Insol Web v0.1 ===');
 
@@ -24,6 +25,7 @@ let sceneManager = null;
 let buildingLoader = null;
 let buildingMesh = null;
 let areaSelector = null;
+let selectTool = null;
 
 let selectedBounds = null;
 let selectModeActive = false;
@@ -49,7 +51,6 @@ function init() {
                 console.log('[App] Выбрана область:', bounds);
             },
             onChange: (bounds) => {
-                // Обновляем UI при изменении области
                 updateLoadButton();
             }
         });
@@ -61,6 +62,7 @@ function init() {
     document.getElementById('select-mode-btn').addEventListener('click', onSelectModeClick);
     document.getElementById('load-btn').addEventListener('click', onLoadClick);
     document.getElementById('back-btn').addEventListener('click', onBackClick);
+    document.getElementById('card-close').addEventListener('click', closeBuildingCard);
     
     window.mapEngine = mapEngine;
     window.buildingLoader = buildingLoader;
@@ -75,6 +77,93 @@ function updateLoadButton() {
     if (loadBtn && areaSelector) {
         loadBtn.disabled = !areaSelector.isValid();
     }
+}
+
+// ============================================
+// Карточка здания
+// ============================================
+
+// ============================================
+// Карточка здания
+// ============================================
+
+function showBuildingCard(data) {
+    const card = document.getElementById('building-card');
+    
+    if (!data) {
+        // Просто скрываем карточку, НЕ вызываем deselect
+        card.classList.add('hidden');
+        return;
+    }
+    
+    const props = data.properties || {};
+    
+    // Обновляем класс карточки
+    card.className = props.isResidential ? 'residential' : 'other';
+    
+    // Заголовок
+    document.getElementById('card-title').textContent = 
+        props.isResidential ? '🏠 Жилое здание' : '🏢 Здание';
+    
+    // Данные
+    document.getElementById('card-type').textContent = 
+        props.isResidential ? 'Жилое' : 'Нежилое';
+    
+    document.getElementById('card-function').textContent = 
+        formatBuildingType(props.buildingType);
+    
+    document.getElementById('card-levels').textContent = 
+        props.levels ? props.levels : '—';
+    
+    document.getElementById('card-height').textContent = 
+        props.height ? `${props.height.toFixed(1)} м` : '—';
+
+    document.getElementById('card-height-source').textContent = 
+        props.heightSource === 'osm' ? 'OSM (точная)' : 
+        props.heightSource === 'levels' ? 'Из этажей' : 'По умолчанию';
+    
+    document.getElementById('card-address').textContent = 
+        props.address || '—';
+    
+    document.getElementById('card-osm-id').textContent = 
+        data.id || '—';
+    
+    card.classList.remove('hidden');
+}
+
+function closeBuildingCard() {
+    document.getElementById('building-card').classList.add('hidden');
+    
+    // Снимаем выделение
+    if (selectTool) {
+        selectTool.deselect();
+    }
+}
+
+function formatBuildingType(type) {
+    const types = {
+        'apartments': 'Многоквартирный дом',
+        'residential': 'Жилой дом',
+        'house': 'Дом',
+        'detached': 'Отдельный дом',
+        'dormitory': 'Общежитие',
+        'commercial': 'Коммерческое',
+        'retail': 'Торговое',
+        'office': 'Офисное',
+        'industrial': 'Промышленное',
+        'warehouse': 'Склад',
+        'school': 'Школа',
+        'university': 'Университет',
+        'hospital': 'Больница',
+        'church': 'Церковь',
+        'garage': 'Гараж',
+        'garages': 'Гаражи',
+        'shed': 'Сарай',
+        'roof': 'Навес',
+        'yes': 'Не указано'
+    };
+    
+    return types[type] || type || 'Не указано';
 }
 
 // ============================================
@@ -93,7 +182,7 @@ function onSelectModeClick() {
     } else {
         btn.textContent = '✎ Выбрать область';
         btn.classList.remove('active');
-        areaSelector.disableDrawing(); // Не сбрасываем область!
+        areaSelector.disableDrawing();
     }
 }
 
@@ -129,7 +218,7 @@ async function onLoadClick() {
     document.getElementById('map-mode').classList.add('hidden');
     document.getElementById('scene-mode').classList.remove('hidden');
     
-    // Создаём или обновляем 3D-сцену
+    // Создаём или обновляем сцену
     if (sceneManager) {
         sceneManager.clearBuildings();
     } else {
@@ -137,11 +226,11 @@ async function onLoadClick() {
         sceneManager.init();
     }
     
-    sceneManager.coordinates = coords; // Обновляем систему координат
+    sceneManager.coordinates = coords;
     sceneManager.setAreaSize(widthM, heightM);
     sceneManager.loadGroundTile(selectedBounds);
     
-    // Создаём меши зданий
+    // Создаём меши
     buildingMesh = new BuildingMesh(coords);
     const meshes = buildingMesh.createMeshes(buildings);
     
@@ -150,14 +239,25 @@ async function onLoadClick() {
         group.add(mesh);
     }
     
-    // UI
-    document.getElementById('building-count').textContent = meshes.length;
+    // Инструмент выбора
+    selectTool = new SelectTool(sceneManager, {
+        onSelect: (data, mesh) => {
+            showBuildingCard(data);
+        }
+    });
+    
+    // Статистика
+    const residentialCount = buildings.filter(b => b.properties.isResidential).length;
+    document.getElementById('building-count').textContent = 
+        `${meshes.length} (жилых: ${residentialCount})`;
+    
     btn.textContent = 'Загрузить область';
     
     window.sceneManager = sceneManager;
+    window.selectTool = selectTool;
     window.coords = coords;
     
-    console.log(`[App] 3D-сцена загружена. Зданий: ${meshes.length}`);
+    console.log(`[App] Загружено: ${meshes.length} зданий, жилых: ${residentialCount}`);
 }
 
 // ============================================
@@ -165,12 +265,13 @@ async function onLoadClick() {
 // ============================================
 
 function onBackClick() {
-    // НЕ очищаем sceneManager — оставляем для переиспользования
-    
     document.getElementById('scene-mode').classList.add('hidden');
     document.getElementById('map-mode').classList.remove('hidden');
     
-    // Сброс режима рисования, но НЕ области
+    // Закрываем карточку
+    closeBuildingCard();
+    
+    // Сброс UI
     const btn = document.getElementById('select-mode-btn');
     btn.textContent = '✎ Изменить область';
     btn.classList.remove('active');
@@ -180,7 +281,6 @@ function onBackClick() {
         areaSelector.disableDrawing();
     }
     
-    // Обновляем кнопку загрузки
     const loadBtn = document.getElementById('load-btn');
     loadBtn.textContent = 'Обновить область';
     updateLoadButton();
