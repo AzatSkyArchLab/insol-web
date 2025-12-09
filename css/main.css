@@ -379,3 +379,43 @@ body {
     background: #ccc;
     cursor: not-allowed;
 }
+
+
+
+/* --- Card Toggle --- */
+.card-toggle {
+    display: flex;
+    gap: 4px;
+}
+
+.toggle-btn {
+    padding: 4px 10px;
+    border: 1px solid #d0dff0;
+    background: #f5f8fc;
+    color: #666;
+    font-size: 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.toggle-btn:hover {
+    border-color: #4a90d9;
+    color: #4a90d9;
+}
+
+.toggle-btn.active {
+    background: #4a90d9;
+    border-color: #4a90d9;
+    color: white;
+}
+
+.toggle-btn.active.residential {
+    background: #5b8dd9;
+    border-color: #5b8dd9;
+}
+
+.toggle-btn.active.other {
+    background: #888888;
+    border-color: #888888;
+}

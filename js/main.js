@@ -66,6 +66,10 @@ function init() {
     document.getElementById('back-btn').addEventListener('click', onBackClick);
     document.getElementById('card-close').addEventListener('click', closeBuildingCard);
     document.getElementById('edit-height-btn').addEventListener('click', onEditHeightClick);
+
+    document.querySelectorAll('.toggle-btn').forEach(btn => {
+        btn.addEventListener('click', onToggleBuildingType);
+    });
     
     window.mapEngine = mapEngine;
     window.buildingLoader = buildingLoader;
@@ -94,7 +98,6 @@ function showBuildingCard(data) {
     const card = document.getElementById('building-card');
     
     if (!data) {
-        // Просто скрываем карточку, НЕ вызываем deselect
         card.classList.add('hidden');
         return;
     }
@@ -108,10 +111,16 @@ function showBuildingCard(data) {
     document.getElementById('card-title').textContent = 
         props.isResidential ? '🏠 Жилое здание' : '🏢 Здание';
     
-    // Данные
-    document.getElementById('card-type').textContent = 
-        props.isResidential ? 'Жилое' : 'Нежилое';
+    // Обновляем toggle кнопки
+    document.querySelectorAll('.toggle-btn').forEach(btn => {
+        const btnResidential = btn.dataset.residential === 'true';
+        btn.classList.remove('active', 'residential', 'other');
+        if (btnResidential === props.isResidential) {
+            btn.classList.add('active', props.isResidential ? 'residential' : 'other');
+        }
+    });
     
+    // Данные
     document.getElementById('card-function').textContent = 
         formatBuildingType(props.buildingType);
     
@@ -120,10 +129,11 @@ function showBuildingCard(data) {
     
     document.getElementById('card-height').textContent = 
         props.height ? `${props.height.toFixed(1)} м` : '—';
-
+    
     document.getElementById('card-height-source').textContent = 
         props.heightSource === 'osm' ? 'OSM (точная)' : 
-        props.heightSource === 'levels' ? 'Из этажей' : 'По умолчанию';
+        props.heightSource === 'levels' ? 'Из этажей' : 
+        props.heightSource === 'edited' ? 'Редактирование' : 'По умолчанию';
     
     document.getElementById('card-address').textContent = 
         props.address || '—';
@@ -181,6 +191,37 @@ function onEditHeightClick() {
     if (selectedMesh) {
         heightEditor.activate(selectedMesh);
     }
+}
+
+function onToggleBuildingType(event) {
+    if (!selectTool) return;
+    
+    const selectedMesh = selectTool.getSelected();
+    if (!selectedMesh) return;
+    
+    const isResidential = event.target.dataset.residential === 'true';
+    
+    // Обновляем данные
+    selectedMesh.userData.properties.isResidential = isResidential;
+    
+    // Обновляем цвет
+    const newColor = isResidential ? 0x5b8dd9 : 0x888888;
+    selectedMesh.material.color.setHex(newColor);
+    selectedMesh.userData.originalColor = newColor;
+    
+    // Обновляем кнопки
+    document.querySelectorAll('.toggle-btn').forEach(btn => {
+        btn.classList.remove('active', 'residential', 'other');
+    });
+    event.target.classList.add('active', isResidential ? 'residential' : 'other');
+    
+    // Обновляем заголовок карточки
+    const card = document.getElementById('building-card');
+    card.className = isResidential ? 'residential' : 'other';
+    document.getElementById('card-title').textContent = 
+        isResidential ? '🏠 Жилое здание' : '🏢 Здание';
+    
+    console.log(`[App] Тип изменён: ${selectedMesh.userData.id} → ${isResidential ? 'жилое' : 'нежилое'}`);
 }
 
 // ============================================
