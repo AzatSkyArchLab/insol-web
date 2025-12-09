@@ -12,6 +12,7 @@ import { BuildingLoader } from './buildings/BuildingLoader.js';
 import { BuildingMesh } from './buildings/BuildingMesh.js';
 import { AreaSelector } from './editor/AreaSelector.js';
 import { SelectTool } from './editor/SelectTool.js';
+import { HeightEditor } from './editor/HeightEditor.js';
 
 console.log('=== Insol Web v0.1 ===');
 
@@ -29,6 +30,7 @@ let selectTool = null;
 
 let selectedBounds = null;
 let selectModeActive = false;
+let heightEditor = null;
 
 // ============================================
 // Инициализация
@@ -63,6 +65,7 @@ function init() {
     document.getElementById('load-btn').addEventListener('click', onLoadClick);
     document.getElementById('back-btn').addEventListener('click', onBackClick);
     document.getElementById('card-close').addEventListener('click', closeBuildingCard);
+    document.getElementById('edit-height-btn').addEventListener('click', onEditHeightClick);
     
     window.mapEngine = mapEngine;
     window.buildingLoader = buildingLoader;
@@ -134,7 +137,11 @@ function showBuildingCard(data) {
 function closeBuildingCard() {
     document.getElementById('building-card').classList.add('hidden');
     
-    // Снимаем выделение
+    // Закрываем редактор высоты
+    if (heightEditor && heightEditor.isActive()) {
+        heightEditor.deactivate();
+    }
+    
     if (selectTool) {
         selectTool.deselect();
     }
@@ -164,6 +171,16 @@ function formatBuildingType(type) {
     };
     
     return types[type] || type || 'Не указано';
+}
+
+
+function onEditHeightClick() {
+    if (!selectTool || !heightEditor) return;
+    
+    const selectedMesh = selectTool.getSelected();
+    if (selectedMesh) {
+        heightEditor.activate(selectedMesh);
+    }
 }
 
 // ============================================
@@ -245,6 +262,21 @@ async function onLoadClick() {
             showBuildingCard(data);
         }
     });
+
+    // Редактор высоты
+    heightEditor = new HeightEditor(sceneManager, {
+        onChange: (mesh, height) => {
+            // Обновляем карточку в реальном времени
+            document.getElementById('card-height').textContent = `${height} м`;
+            document.getElementById('card-height-source').textContent = 'Редактирование';
+        },
+        onComplete: (mesh, height) => {
+            console.log(`[App] Высота изменена: ${mesh.userData.id} → ${height}м`);
+        }
+    });
+
+    window.heightEditor = heightEditor;
+
     
     // Статистика
     const residentialCount = buildings.filter(b => b.properties.isResidential).length;

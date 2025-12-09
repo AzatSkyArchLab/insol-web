@@ -123,8 +123,11 @@ class SceneManager {
     _animate() {
         requestAnimationFrame(() => this._animate());
         
-        if (this.controls) {
-            this.controls.update();
+        this.controls.update();
+        
+        // Обновление HeightEditor
+        if (window.heightEditor) {
+            window.heightEditor.update();
         }
         
         this.renderer.render(this.scene, this.camera);
