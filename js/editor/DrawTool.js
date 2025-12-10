@@ -439,12 +439,13 @@ class DrawTool {
             bevelEnabled: false
         });
         
-        // ВАЖНО для raycasting!
+        // важно для raycasting!
         geometry.computeBoundingBox();
         geometry.computeBoundingSphere();
         
         const material = new THREE.MeshLambertMaterial({ 
-            color: 0x5b8dd9 
+            color: 0x5b8dd9,
+            side: THREE.DoubleSide
         });
         
         const mesh = new THREE.Mesh(geometry, material);
