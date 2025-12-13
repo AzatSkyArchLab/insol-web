@@ -19,6 +19,9 @@ import { DrawTool } from './editor/DrawTool.js';
 import { InsolationCalculator } from './insolation/InsolationCalculator.js';
 import { MoveTool } from './editor/MoveTool.js';
 import { Compass } from './editor/Compass.js';
+import { ProjectExporter } from './io/ProjectExporter.js';
+import { ProjectImporter } from './io/ProjectImporter.js';
+import { ViolationHighlighter } from './insolation/ViolationHighlighter.js';
 
 //import { VertexEditor } from './editor/VertexEditor.js'; // TODO: интегрировать позже
 
@@ -46,6 +49,9 @@ let insolationGrid = null;
 let insolationCalculator = null;
 let selectedResultIndex = null;
 let compass = null;
+let projectExporter = null;
+let projectImporter = null;
+let violationHighlighter = null;
 
 // Для автоперерасчёта инсоляции
 let lastCalculatedPoints = null;
@@ -415,6 +421,42 @@ async function onLoadClick() {
         onComplete: (mesh, height) => {
             console.log(`[App] Высота изменена: ${mesh.userData.id} → ${height}м`);
             
+            // Если сетка активна для этого здания — перестраиваем её
+            if (insolationGrid && insolationGrid.isMeshActive(mesh)) {
+                const activeMeshes = insolationGrid.getActiveMeshes();
+                console.log(`[App] Перестроение сетки после изменения высоты`);
+                insolationGrid.createGrid(activeMeshes);
+                
+                // Сбрасываем результаты расчётов
+                lastCalculatedPoints = null;
+                lastCalculationResults = null;
+                
+                // Скрываем лучи
+                if (insolationCalculator) {
+                    insolationCalculator.hideRays();
+                    insolationCalculator.hideAllRays();
+                }
+                
+                // Обновляем UI
+                const toggleRaysBtn = document.getElementById('toggle-rays-btn');
+                const toggleAllRaysBtn = document.getElementById('toggle-all-rays-btn');
+                if (toggleRaysBtn) {
+                    toggleRaysBtn.classList.remove('active');
+                    toggleRaysBtn.textContent = 'Лучи точки';
+                }
+                if (toggleAllRaysBtn) {
+                    toggleAllRaysBtn.classList.remove('active');
+                    toggleAllRaysBtn.textContent = 'Все лучи';
+                }
+                
+                // Скрываем панель результатов
+                const resultsPanel = document.getElementById('insolation-results');
+                if (resultsPanel) {
+                    resultsPanel.classList.remove('visible');
+                    resultsPanel.classList.add('hidden');
+                }
+            }
+            
             // Финальный перерасчёт инсоляции
             recalculateInsolationIfActive();
         }
@@ -476,9 +518,28 @@ async function onLoadClick() {
 
     initInsolationTools();
 
+    // Создаём экспортёр/импортёр проекта
+    projectExporter = new ProjectExporter(sceneManager, coords, {
+        mapCenter: { lat: coords.centerLat, lng: coords.centerLon },
+        mapZoom: 17
+    });
+    
+    projectImporter = new ProjectImporter(sceneManager, coords, buildingMesh, {
+        onImportComplete: (results) => {
+            const count = sceneManager.getBuildingsGroup().children.length;
+            document.getElementById('building-count').textContent = `${count} зданий`;
+            console.log(`[App] Импорт завершён: ${results.imported} зданий`);
+        },
+        onError: (err) => {
+            alert(`Ошибка импорта: ${err}`);
+        }
+    });
+
     window.editorToolbar = editorToolbar;
     window.drawTool = drawTool;
     window.moveTool = moveTool;
+    window.projectExporter = projectExporter;
+    window.projectImporter = projectImporter;
 
     
     // Статистика
@@ -527,6 +588,11 @@ async function onLoadClick() {
         }
         if (insolationCalculator) {
             insolationCalculator.hideRays();
+        }
+        // Очищаем подсветку нарушений
+        if (violationHighlighter) {
+            violationHighlighter.clearAllHighlights();
+            violationHighlighter.clearBaseline();
         }
         
         // Выключаем инструменты
@@ -753,6 +819,11 @@ async function onLoadClick() {
         calcBtn.disabled = true;
         
         setTimeout(() => {
+            // Сохраняем предыдущие результаты для сравнения
+            if (lastCalculationResults && violationHighlighter) {
+                violationHighlighter.saveBaseline(lastCalculationResults);
+            }
+            
             const { results, stats } = insolationCalculator.calculatePoints(
                 selectedPoints, 
                 null,  // Не исключаем здания
@@ -765,6 +836,14 @@ async function onLoadClick() {
             results.forEach(r => {
                 insolationGrid.setPointResult(r.point.index, r.evaluation);
             });
+            
+            // Проверяем ухудшение и подсвечиваем здания
+            if (violationHighlighter && violationHighlighter.previousResults.size > 0) {
+                const changes = violationHighlighter.checkAndHighlight(results, activeMeshes);
+                if (changes.degraded > 0) {
+                    console.log(`[App] ⚠️ Ухудшение инсоляции: ${changes.degraded} точек (${changes.worstLevel})`);
+                }
+            }
             
             showInsolationResults(results, stats);
             
@@ -790,6 +869,11 @@ async function onLoadClick() {
         const singleRaysWereActive = toggleBtn && toggleBtn.classList.contains('active');
         const savedResultIndex = selectedResultIndex;
         
+        // Сохраняем предыдущие результаты для сравнения
+        if (lastCalculationResults && violationHighlighter) {
+            violationHighlighter.saveBaseline(lastCalculationResults);
+        }
+        
         // Пересчитываем с теми же точками
         const { results, stats } = insolationCalculator.calculatePoints(
             lastCalculatedPoints, 
@@ -803,6 +887,14 @@ async function onLoadClick() {
         results.forEach(r => {
             insolationGrid.setPointResult(r.point.index, r.evaluation);
         });
+        
+        // Проверяем ухудшение и подсвечиваем здания
+        if (violationHighlighter && violationHighlighter.previousResults.size > 0) {
+            const changes = violationHighlighter.checkAndHighlight(results, lastActiveMeshes);
+            if (changes.degraded > 0) {
+                console.log(`[App] ⚠️ Ухудшение инсоляции: ${changes.degraded} точек (${changes.worstLevel})`);
+            }
+        }
         
         // Обновляем статистику БЕЗ сброса UI лучей
         document.getElementById('stat-pass').textContent = stats.pass;
@@ -944,6 +1036,15 @@ async function onLoadClick() {
         });
         window.insolationCalculator = insolationCalculator;
         
+        // Подсветка нарушений инсоляции
+        violationHighlighter = new ViolationHighlighter(sceneManager, {
+            flashCount: 3,
+            flashDuration: 200,
+            warningColor: 0xff9800,  // Оранжевый
+            failColor: 0xf44336      // Красный
+        });
+        window.violationHighlighter = violationHighlighter;
+        
         console.log('[App] Инструменты инсоляции инициализированы');
     }
 
@@ -974,6 +1075,64 @@ async function onLoadClick() {
         btn.classList.toggle('active', visible);
         btn.textContent = visible ? 'Скрыть все' : 'Все лучи';
     }
+
+// ============================================
+// Экспорт/Импорт проекта
+// ============================================
+
+function exportProjectToGeoJSON() {
+    if (!projectExporter) {
+        alert('Сначала загрузите область на карте');
+        return;
+    }
+    
+    const timestamp = new Date().toISOString().slice(0, 10);
+    projectExporter.downloadGeoJSON(`insol-project-${timestamp}.geojson`);
+}
+
+function exportProjectToOBJ() {
+    if (!projectExporter) {
+        alert('Сначала загрузите область на карте');
+        return;
+    }
+    
+    const timestamp = new Date().toISOString().slice(0, 10);
+    // downloadOBJ async - но не ждём результата, он сам покажет диалог
+    projectExporter.downloadOBJ(`insol-project-${timestamp}`).catch(e => {
+        console.error('[App] Ошибка экспорта OBJ:', e);
+        alert('Ошибка экспорта: ' + e.message);
+    });
+}
+
+// TODO: Импорт GeoJSON временно отключён — требует доработки
+// function importProjectFromGeoJSON() {
+//     if (!projectImporter) {
+//         alert('Сначала загрузите область на карте');
+//         return;
+//     }
+//     
+//     const input = document.createElement('input');
+//     input.type = 'file';
+//     input.accept = '.geojson,.json';
+//     
+//     input.onchange = (e) => {
+//         const file = e.target.files[0];
+//         if (file) {
+//             const confirmClear = confirm('Очистить существующие здания перед импортом?');
+//             if (confirmClear) {
+//                 projectImporter.clearAllBuildings();
+//             }
+//             projectImporter.importFromFile(file);
+//         }
+//     };
+//     
+//     input.click();
+// }
+
+// Глобальные функции для вызова из UI
+window.exportProjectToGeoJSON = exportProjectToGeoJSON;
+window.exportProjectToOBJ = exportProjectToOBJ;
+// window.importProjectFromGeoJSON = importProjectFromGeoJSON;
 
 // ============================================
 // Запуск
