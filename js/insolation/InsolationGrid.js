@@ -2,6 +2,8 @@
  * ============================================
  * InsolationGrid.js
  * Инсоляционная сетка на фасадах здания
+ * Поддержка множественного выбора зданий
+ * Синхронное перемещение с зданием
  * ============================================
  */
 
@@ -17,12 +19,17 @@ class InsolationGrid {
         this.horizontalStep = options.horizontalStep || 3.0;
         this.horizontalMaxStep = options.horizontalMaxStep || 3.3;
         this.offset = options.offset || 0.01;
-        this.pointSize = options.pointSize || 0.5; // Размер точки
+        this.pointSize = options.pointSize || 0.5;
         
         // Визуальные элементы
         this.pointsGroup = null;
         this.gridLinesGroup = null;
-        this.activeMesh = null;
+        
+        // Группы для каждого здания
+        this.meshGroups = new Map();
+        
+        // Поддержка множественного выбора
+        this.activeMeshes = [];
         
         // Данные точек
         this.calculationPoints = [];
@@ -52,23 +59,19 @@ class InsolationGrid {
     }
     
     /**
-     * Создать сетку для здания
+     * Создать сетку для здания или нескольких зданий
      */
-    createGrid(mesh) {
+    createGrid(meshOrMeshes) {
         this.clearGrid();
         
-        this.activeMesh = mesh;
+        const meshes = Array.isArray(meshOrMeshes) ? meshOrMeshes : [meshOrMeshes];
         
-        const points = this._extractBasePoints(mesh);
-        if (!points || points.length < 3) {
-            console.warn('[InsolationGrid] Не удалось извлечь точки здания');
+        if (meshes.length === 0) {
+            console.warn('[InsolationGrid] Нет зданий для создания сетки');
             return null;
         }
         
-        const height = mesh.userData.properties?.height || 9;
-        const levels = Math.floor(height / this.verticalStep);
-        
-        console.log(`[InsolationGrid] Здание: ${mesh.userData.id}, высота: ${height}м, уровней: ${levels}`);
+        this.activeMeshes = meshes;
         
         this.pointsGroup = new THREE.Group();
         this.pointsGroup.name = 'insolation-points';
@@ -78,29 +81,64 @@ class InsolationGrid {
         
         this.calculationPoints = [];
         
-        // Для каждого ребра (фасада)
-        for (let i = 0; i < points.length; i++) {
-            const p1 = points[i];
-            const p2 = points[(i + 1) % points.length];
-            
-            this._createFacadeGrid(p1, p2, height, levels, i);
+        for (let meshIndex = 0; meshIndex < meshes.length; meshIndex++) {
+            const mesh = meshes[meshIndex];
+            this._createGridForMesh(mesh, meshIndex);
         }
         
         this.scene.add(this.pointsGroup);
         this.scene.add(this.gridLinesGroup);
         
-        // Включаем выбор точек
         this._enableSelection();
         
-        console.log(`[InsolationGrid] Создано ${this.calculationPoints.length} расчётных точек`);
+        console.log(`[InsolationGrid] Создано ${this.calculationPoints.length} точек для ${meshes.length} зданий`);
         
         return this.calculationPoints;
     }
     
     /**
-     * Создать сетку для одного фасада
+     * Создать сетку для одного здания
      */
-    _createFacadeGrid(p1, p2, height, levels, facadeIndex) {
+    _createGridForMesh(mesh, meshIndex) {
+        // Получаем локальные точки контура (без учёта position и rotation)
+        const localPoints = this._extractLocalBasePoints(mesh);
+        if (!localPoints || localPoints.length < 3) {
+            console.warn(`[InsolationGrid] Не удалось извлечь точки здания ${mesh.userData.id}`);
+            return;
+        }
+        
+        const height = mesh.userData.properties?.height || 9;
+        const levels = Math.floor(height / this.verticalStep);
+        
+        console.log(`[InsolationGrid] Здание ${meshIndex + 1}: ${mesh.userData.id}, высота: ${height}м`);
+        
+        // Создаём группу для этого здания
+        const meshGroup = {
+            pointIndices: [],
+            lineObjects: [],
+            localPointData: [],  // {localX, localY, localZ, localNormalX, localNormalY}
+            localLineData: [],   // [{x, y, z}, {x, y, z}]
+            height: height
+        };
+        
+        // Для каждого ребра (фасада)
+        for (let i = 0; i < localPoints.length; i++) {
+            const p1 = localPoints[i];
+            const p2 = localPoints[(i + 1) % localPoints.length];
+            
+            this._createFacadeGrid(p1, p2, height, levels, i, mesh, meshIndex, meshGroup);
+        }
+        
+        this.meshGroups.set(mesh, meshGroup);
+        
+        // Синхронизируем с текущей позицией здания
+        this.syncWithMesh(mesh);
+    }
+    
+    /**
+     * Создать сетку для одного фасада (в локальных координатах)
+     */
+    _createFacadeGrid(p1, p2, height, levels, facadeIndex, mesh, meshIndex, meshGroup) {
         const edgeVec = new THREE.Vector2(p2.x - p1.x, p2.y - p1.y);
         const edgeLength = edgeVec.length();
         
@@ -108,8 +146,9 @@ class InsolationGrid {
         
         const edgeDir = edgeVec.clone().normalize();
         
-        // Нормаль к фасаду (наружу)
-        const normal = new THREE.Vector3(-edgeDir.y, edgeDir.x, 0);
+        // Нормаль к фасаду (наружу) в локальных координатах
+        const normalX = -edgeDir.y;
+        const normalY = edgeDir.x;
         
         // Количество сегментов
         let horizontalSegments = Math.max(1, Math.round(edgeLength / this.horizontalStep));
@@ -117,38 +156,51 @@ class InsolationGrid {
         
         if (actualStep > this.horizontalMaxStep) {
             horizontalSegments = Math.ceil(edgeLength / this.horizontalMaxStep);
-            actualStep = edgeLength / horizontalSegments;
         }
         
-        // Линии сетки (вертикальные)
+        // Вертикальные линии
         for (let h = 0; h <= horizontalSegments; h++) {
             const t = h / horizontalSegments;
-            const x = p1.x + (p2.x - p1.x) * t;
-            const y = p1.y + (p2.y - p1.y) * t;
+            const localX = p1.x + (p2.x - p1.x) * t;
+            const localY = p1.y + (p2.y - p1.y) * t;
             
+            // Создаём линию (позиция будет обновлена в syncWithMesh)
             const linePoints = [
-                new THREE.Vector3(x, y, 0),
-                new THREE.Vector3(x, y, height)
+                new THREE.Vector3(0, 0, 0),
+                new THREE.Vector3(0, 0, height)
             ];
             
             const geometry = new THREE.BufferGeometry().setFromPoints(linePoints);
             const line = new THREE.Line(geometry, this.gridLineMaterial.clone());
             this.gridLinesGroup.add(line);
+            meshGroup.lineObjects.push(line);
+            
+            // Сохраняем локальные координаты
+            meshGroup.localLineData.push([
+                { x: localX, y: localY, z: 0 },
+                { x: localX, y: localY, z: height }
+            ]);
         }
         
-        // Линии сетки (горизонтальные)
+        // Горизонтальные линии
         for (let v = 0; v <= levels; v++) {
             const z = v * this.verticalStep;
             if (z > height) break;
             
             const linePoints = [
-                new THREE.Vector3(p1.x, p1.y, z),
-                new THREE.Vector3(p2.x, p2.y, z)
+                new THREE.Vector3(0, 0, z),
+                new THREE.Vector3(0, 0, z)
             ];
             
             const geometry = new THREE.BufferGeometry().setFromPoints(linePoints);
             const line = new THREE.Line(geometry, this.gridLineMaterial.clone());
             this.gridLinesGroup.add(line);
+            meshGroup.lineObjects.push(line);
+            
+            meshGroup.localLineData.push([
+                { x: p1.x, y: p1.y, z: z },
+                { x: p2.x, y: p2.y, z: z }
+            ]);
         }
         
         // Расчётные точки
@@ -159,65 +211,90 @@ class InsolationGrid {
             for (let h = 0; h < horizontalSegments; h++) {
                 const t = (h + 0.5) / horizontalSegments;
                 
-                const x = p1.x + (p2.x - p1.x) * t;
-                const y = p1.y + (p2.y - p1.y) * t;
+                const localX = p1.x + (p2.x - p1.x) * t + normalX * this.offset;
+                const localY = p1.y + (p2.y - p1.y) * t + normalY * this.offset;
                 
-                // Смещение от фасада
-                const position = new THREE.Vector3(
-                    x + normal.x * this.offset,
-                    y + normal.y * this.offset,
-                    z
-                );
-                
-                // Визуальная точка (увеличенный размер)
+                // Создаём точку (позиция будет обновлена в syncWithMesh)
                 const pointGeometry = new THREE.SphereGeometry(this.pointSize, 12, 12);
                 const pointMesh = new THREE.Mesh(pointGeometry, this.pointMaterial.clone());
-                pointMesh.position.copy(position);
+                
+                const pointIndex = this.calculationPoints.length;
                 pointMesh.userData = { 
                     type: 'insolation-point',
-                    index: this.calculationPoints.length 
+                    index: pointIndex 
                 };
                 this.pointsGroup.add(pointMesh);
                 
-                // Данные точки
+                meshGroup.pointIndices.push(pointIndex);
+                
+                // Сохраняем локальные данные
+                meshGroup.localPointData.push({
+                    localX: localX,
+                    localY: localY,
+                    localZ: z,
+                    localNormalX: normalX,
+                    localNormalY: normalY
+                });
+                
+                // Данные точки (position будет обновлён в syncWithMesh)
                 this.calculationPoints.push({
-                    index: this.calculationPoints.length,
-                    position: position.clone(),
-                    normal: normal.clone(),
+                    index: pointIndex,
+                    position: new THREE.Vector3(0, 0, z),
+                    normal: new THREE.Vector3(normalX, normalY, 0),
                     facadeIndex: facadeIndex,
                     level: v,
                     horizontalIndex: h,
                     mesh: pointMesh,
                     selected: false,
-                    result: null
+                    result: null,
+                    buildingMesh: mesh,
+                    buildingIndex: meshIndex,
+                    buildingId: mesh.userData.id
                 });
             }
         }
     }
     
     /**
-     * Извлечь базовые точки здания
+     * Извлечь локальные базовые точки здания (без position и rotation)
      */
-    _extractBasePoints(mesh) {
-        const pos = mesh.position;
-        
-        if (mesh.userData.basePoints && mesh.userData.basePoints.length >= 3) {
-            return mesh.userData.basePoints.map(p => ({ x: p.x, y: p.y }));
-        }
-        
+    _extractLocalBasePoints(mesh) {
+        // Из Shape geometry
         const params = mesh.geometry.parameters;
         if (params && params.shapes) {
             const shape = params.shapes;
             const shapePoints = shape.getPoints ? shape.getPoints() : null;
             
             if (shapePoints && shapePoints.length >= 3) {
-                return shapePoints.map(p => ({ 
-                    x: p.x + pos.x, 
-                    y: p.y + pos.y 
-                }));
+                return shapePoints.map(p => ({ x: p.x, y: p.y }));
             }
         }
         
+        // Из localBasePoints (если они сохранены)
+        if (mesh.userData.localBasePoints && mesh.userData.localBasePoints.length >= 3) {
+            return mesh.userData.localBasePoints.map(p => ({ x: p.x, y: p.y }));
+        }
+        
+        // Из мировых basePoints — конвертируем в локальные
+        if (mesh.userData.basePoints && mesh.userData.basePoints.length >= 3) {
+            const pos = mesh.position;
+            const rot = mesh.rotation.z || 0;
+            const cos = Math.cos(-rot);
+            const sin = Math.sin(-rot);
+            
+            return mesh.userData.basePoints.map(p => {
+                // Убираем position
+                const dx = p.x - pos.x;
+                const dy = p.y - pos.y;
+                // Убираем rotation (обратный поворот)
+                return {
+                    x: dx * cos - dy * sin,
+                    y: dx * sin + dy * cos
+                };
+            });
+        }
+        
+        // Из geometry attributes (уже в локальных координатах)
         const position = mesh.geometry.getAttribute('position');
         if (!position) return null;
         
@@ -231,8 +308,8 @@ class InsolationGrid {
         for (let i = 0; i < position.count; i++) {
             const z = position.getZ(i);
             if (Math.abs(z - minZ) < 0.5) {
-                const x = parseFloat((position.getX(i) + pos.x).toFixed(2));
-                const y = parseFloat((position.getY(i) + pos.y).toFixed(2));
+                const x = parseFloat(position.getX(i).toFixed(2));
+                const y = parseFloat(position.getY(i).toFixed(2));
                 const key = `${x},${y}`;
                 
                 if (!pointsMap.has(key)) {
@@ -244,6 +321,7 @@ class InsolationGrid {
         let points = Array.from(pointsMap.values());
         if (points.length < 3) return null;
         
+        // Сортируем по углу
         const cx = points.reduce((s, p) => s + p.x, 0) / points.length;
         const cy = points.reduce((s, p) => s + p.y, 0) / points.length;
         
@@ -255,25 +333,81 @@ class InsolationGrid {
     }
     
     /**
-     * Включить выбор точек
+     * Синхронизировать позиции сетки с текущим положением здания
      */
+    syncWithMesh(mesh) {
+        const meshGroup = this.meshGroups.get(mesh);
+        if (!meshGroup) return;
+        
+        const pos = mesh.position;
+        const rot = mesh.rotation.z || 0;
+        const cos = Math.cos(rot);
+        const sin = Math.sin(rot);
+        
+        // Обновляем точки
+        for (let i = 0; i < meshGroup.pointIndices.length; i++) {
+            const pointIndex = meshGroup.pointIndices[i];
+            const point = this.calculationPoints[pointIndex];
+            const local = meshGroup.localPointData[i];
+            
+            if (!point || !local) continue;
+            
+            // Поворачиваем локальные координаты и добавляем position
+            const worldX = local.localX * cos - local.localY * sin + pos.x;
+            const worldY = local.localX * sin + local.localY * cos + pos.y;
+            
+            point.position.x = worldX;
+            point.position.y = worldY;
+            point.position.z = local.localZ;
+            point.mesh.position.set(worldX, worldY, local.localZ);
+            
+            // Поворачиваем нормаль
+            point.normal.x = local.localNormalX * cos - local.localNormalY * sin;
+            point.normal.y = local.localNormalX * sin + local.localNormalY * cos;
+        }
+        
+        // Обновляем линии
+        for (let i = 0; i < meshGroup.lineObjects.length; i++) {
+            const line = meshGroup.lineObjects[i];
+            const localPoints = meshGroup.localLineData[i];
+            
+            if (!localPoints) continue;
+            
+            const positions = line.geometry.attributes.position;
+            
+            for (let j = 0; j < positions.count && j < localPoints.length; j++) {
+                const lp = localPoints[j];
+                
+                const worldX = lp.x * cos - lp.y * sin + pos.x;
+                const worldY = lp.x * sin + lp.y * cos + pos.y;
+                
+                positions.setX(j, worldX);
+                positions.setY(j, worldY);
+                positions.setZ(j, lp.z);
+            }
+            
+            positions.needsUpdate = true;
+        }
+    }
+    
+    /**
+     * Обновить трансформацию сетки (вызывается из MoveTool)
+     */
+    updateMeshTransform(mesh) {
+        this.syncWithMesh(mesh);
+    }
+    
     _enableSelection() {
         if (this._enabled) return;
         this._enabled = true;
         this.renderer.domElement.addEventListener('click', this._boundOnClick);
     }
     
-    /**
-     * Выключить выбор точек
-     */
     _disableSelection() {
         this._enabled = false;
         this.renderer.domElement.removeEventListener('click', this._boundOnClick);
     }
     
-    /**
-     * Обработка клика
-     */
     _onClick(event) {
         if (!this.pointsGroup) return;
         
@@ -296,9 +430,6 @@ class InsolationGrid {
         }
     }
     
-    /**
-     * Переключить выбор точки
-     */
     togglePointSelection(index) {
         const point = this.calculationPoints[index];
         if (!point) return;
@@ -314,13 +445,8 @@ class InsolationGrid {
             this.selectedPoints.add(index);
             this.onPointSelect(point);
         }
-        
-        console.log(`[InsolationGrid] Выбрано точек: ${this.selectedPoints.size}`);
     }
     
-    /**
-     * Выбрать все точки
-     */
     selectAll() {
         this.calculationPoints.forEach((point, index) => {
             if (!point.selected) {
@@ -331,9 +457,6 @@ class InsolationGrid {
         });
     }
     
-    /**
-     * Снять выбор со всех
-     */
     deselectAll() {
         this.calculationPoints.forEach((point) => {
             if (point.selected) {
@@ -344,16 +467,10 @@ class InsolationGrid {
         this.selectedPoints.clear();
     }
     
-    /**
-     * Получить выбранные точки
-     */
     getSelectedPoints() {
         return Array.from(this.selectedPoints).map(i => this.calculationPoints[i]);
     }
     
-    /**
-     * Установить результат для точки
-     */
     setPointResult(index, result) {
         const point = this.calculationPoints[index];
         if (!point) return;
@@ -362,25 +479,15 @@ class InsolationGrid {
         
         let color;
         switch (result.status) {
-            case 'PASS':
-                color = 0x34a853;
-                break;
-            case 'WARNING':
-                color = 0xfbbc04;
-                break;
-            case 'FAIL':
-                color = 0xea4335;
-                break;
-            default:
-                color = 0x888888;
+            case 'PASS': color = 0x34a853; break;
+            case 'WARNING': color = 0xfbbc04; break;
+            case 'FAIL': color = 0xea4335; break;
+            default: color = 0x888888;
         }
         
         point.mesh.material.color.setHex(color);
     }
     
-    /**
-     * Сбросить результаты
-     */
     resetResults() {
         this.calculationPoints.forEach(point => {
             point.result = null;
@@ -388,9 +495,6 @@ class InsolationGrid {
         });
     }
     
-    /**
-     * Очистить сетку
-     */
     clearGrid() {
         this._disableSelection();
         
@@ -414,21 +518,16 @@ class InsolationGrid {
         
         this.calculationPoints = [];
         this.selectedPoints.clear();
-        this.activeMesh = null;
+        this.activeMeshes = [];
+        this.meshGroups.clear();
     }
     
-    /**
-     * Показать/скрыть сетку
-     */
     setGridVisible(visible) {
         if (this.gridLinesGroup) {
             this.gridLinesGroup.visible = visible;
         }
     }
     
-    /**
-     * Показать/скрыть точки
-     */
     setPointsVisible(visible) {
         if (this.pointsGroup) {
             this.pointsGroup.visible = visible;
@@ -440,7 +539,19 @@ class InsolationGrid {
     }
     
     getActiveMesh() {
-        return this.activeMesh;
+        return this.activeMeshes.length > 0 ? this.activeMeshes[0] : null;
+    }
+    
+    getActiveMeshes() {
+        return this.activeMeshes;
+    }
+    
+    isMeshActive(mesh) {
+        return this.activeMeshes.includes(mesh);
+    }
+    
+    getActiveMeshCount() {
+        return this.activeMeshes.length;
     }
     
     hasGrid() {

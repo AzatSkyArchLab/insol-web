@@ -49,7 +49,7 @@ let compass = null;
 
 // Для автоперерасчёта инсоляции
 let lastCalculatedPoints = null;
-let lastActiveMesh = null;
+let lastActiveMeshes = null;  // Массив активных зданий
 let lastCalculationResults = null;
 
 //let vertexEditor = null;
@@ -171,6 +171,70 @@ function showBuildingCard(data) {
         data.id || '—';
     
     card.classList.remove('hidden');
+    
+    // Показываем обычные элементы карточки
+    document.querySelectorAll('.single-select-only').forEach(el => el.style.display = '');
+    const multiInfo = document.getElementById('multi-select-info');
+    if (multiInfo) multiInfo.style.display = 'none';
+}
+
+/**
+ * Показать карточку для множественного выбора
+ */
+function showMultiSelectCard(meshes) {
+    const card = document.getElementById('building-card');
+    
+    if (!meshes || meshes.length === 0) {
+        card.classList.add('hidden');
+        return;
+    }
+    
+    // Если выбрано только одно здание — показываем обычную карточку
+    if (meshes.length === 1) {
+        showBuildingCard(meshes[0].userData);
+        return;
+    }
+    
+    // Множественный выбор
+    const residentialCount = meshes.filter(m => m.userData.properties?.isResidential).length;
+    
+    card.className = 'multi-select';
+    
+    document.getElementById('card-title').textContent = `Выбрано: ${meshes.length} зданий`;
+    
+    // Скрываем одиночные элементы, показываем мультивыбор
+    document.querySelectorAll('.single-select-only').forEach(el => el.style.display = 'none');
+    
+    // Создаём или обновляем info блок для мультивыбора
+    let multiInfo = document.getElementById('multi-select-info');
+    if (!multiInfo) {
+        multiInfo = document.createElement('div');
+        multiInfo.id = 'multi-select-info';
+        multiInfo.className = 'info-grid';
+        const cardContent = card.querySelector('.card-content') || card;
+        const infoGrid = card.querySelector('.info-grid');
+        if (infoGrid) {
+            infoGrid.parentNode.insertBefore(multiInfo, infoGrid);
+        } else {
+            cardContent.appendChild(multiInfo);
+        }
+    }
+    
+    multiInfo.innerHTML = `
+        <div class="info-row">
+            <span class="info-label">Жилых:</span>
+            <span class="info-value">${residentialCount}</span>
+        </div>
+        <div class="info-row">
+            <span class="info-label">Других:</span>
+            <span class="info-value">${meshes.length - residentialCount}</span>
+        </div>
+    `;
+    multiInfo.style.display = '';
+    
+    card.classList.remove('hidden');
+    
+    console.log(`[App] Множественный выбор: ${meshes.length} зданий (жилых: ${residentialCount})`);
 }
 
     function closeBuildingCard() {
@@ -332,6 +396,9 @@ async function onLoadClick() {
     selectTool = new SelectTool(sceneManager, {
         onSelect: (data, mesh) => {
             showBuildingCard(data);
+        },
+        onMultiSelect: (meshes) => {
+            showMultiSelectCard(meshes);
         }
     });
 
@@ -381,7 +448,12 @@ async function onLoadClick() {
             recalculateInsolationIfActive();
         },
         onMove: (mesh) => {
-            // Перерасчёт в реальном времени (throttled в MoveTool)
+            // Синхронизируем сетку с текущим положением здания
+            if (insolationGrid) {
+                insolationGrid.syncWithMesh(mesh);
+            }
+            
+            // Перерасчёт инсоляции в реальном времени
             recalculateInsolationIfActive();
         }
     });
@@ -451,7 +523,7 @@ async function onLoadClick() {
             insolationGrid.clearGrid();
             lastCalculatedPoints = null;
             lastCalculationResults = null;
-            lastActiveMesh = null;
+            lastActiveMeshes = null;
         }
         if (insolationCalculator) {
             insolationCalculator.hideRays();
@@ -520,11 +592,16 @@ async function onLoadClick() {
         }
         
         if (confirm(`Удалить здание ${mesh.userData.id}?`)) {
+            // Сбрасываем MoveTool если он держит это здание
+            if (moveTool) {
+                moveTool.forceReset();
+            }
+            
             // Если удаляем здание с активной сеткой инсоляции — очищаем сетку
-            if (insolationGrid && insolationGrid.getActiveMesh() === mesh) {
+            if (insolationGrid && insolationGrid.isMeshActive(mesh)) {
                 insolationGrid.clearGrid();
                 lastCalculatedPoints = null;
-                lastActiveMesh = null;
+                lastActiveMeshes = null;
                 lastCalculationResults = null;
                 
                 // Скрываем UI инсоляции
@@ -566,10 +643,11 @@ async function onLoadClick() {
     function onInsolationGridClick() {
         if (!selectTool || !insolationGrid) return;
         
-        const selectedMesh = selectTool.getSelected();
+        // Получаем все выбранные здания
+        const selectedMeshes = selectTool.getSelectedMultiple();
         
-        if (!selectedMesh) {
-            alert('Сначала выберите здание');
+        if (selectedMeshes.length === 0) {
+            alert('Сначала выберите здание (Shift+клик для множественного выбора)');
             return;
         }
         
@@ -577,12 +655,17 @@ async function onLoadClick() {
         const selectAllBtn = document.getElementById('select-all-points-btn');
         const calcBtn = document.getElementById('calculate-insolation-btn');
         
-        if (insolationGrid.getActiveMesh() === selectedMesh) {
+        // Проверяем, совпадает ли текущая сетка с выбранными зданиями
+        const activeMeshes = insolationGrid.getActiveMeshes();
+        const isSameSelection = activeMeshes.length === selectedMeshes.length &&
+            selectedMeshes.every(m => activeMeshes.includes(m));
+        
+        if (isSameSelection && activeMeshes.length > 0) {
             // Убираем сетку
             insolationGrid.clearGrid();
             lastCalculatedPoints = null;
             lastCalculationResults = null;
-            lastActiveMesh = null;
+            lastActiveMeshes = null;
             btn.classList.remove('active');
             btn.textContent = 'Инсоляционная сетка';
             selectAllBtn.classList.add('hidden');
@@ -615,17 +698,18 @@ async function onLoadClick() {
             return;
         }
         
-        // Создаём сетку
-        const points = insolationGrid.createGrid(selectedMesh);
+        // Создаём сетку для выбранных зданий
+        const points = insolationGrid.createGrid(selectedMeshes);
         
         if (points && points.length > 0) {
             btn.classList.add('active');
-            btn.textContent = 'Убрать сетку';
+            const buildingText = selectedMeshes.length === 1 ? '' : ` (${selectedMeshes.length} зд.)`;
+            btn.textContent = `Убрать сетку${buildingText}`;
             selectAllBtn.classList.remove('hidden');
             calcBtn.classList.remove('hidden');
-            console.log(`[App] Создана сетка: ${points.length} точек`);
+            console.log(`[App] Создана сетка: ${points.length} точек для ${selectedMeshes.length} зданий`);
         } else {
-            alert('Не удалось создать сетку для этого здания');
+            alert('Не удалось создать сетку для выбранных зданий');
         }
     }
 
@@ -656,13 +740,13 @@ async function onLoadClick() {
             return;
         }
         
-        const activeMesh = insolationGrid.getActiveMesh();
+        const activeMeshes = insolationGrid.getActiveMeshes();
         
         // Сохраняем для автоперерасчёта
         lastCalculatedPoints = selectedPoints;
-        lastActiveMesh = activeMesh;
+        lastActiveMeshes = activeMeshes;
         
-        console.log(`[App] Расчёт инсоляции для ${selectedPoints.length} точек...`);
+        console.log(`[App] Расчёт инсоляции для ${selectedPoints.length} точек (${activeMeshes.length} зданий)...`);
         
         const calcBtn = document.getElementById('calculate-insolation-btn');
         calcBtn.textContent = 'Расчёт...';
@@ -671,7 +755,7 @@ async function onLoadClick() {
         setTimeout(() => {
             const { results, stats } = insolationCalculator.calculatePoints(
                 selectedPoints, 
-                activeMesh,
+                null,  // Не исключаем здания
                 120
             );
             
@@ -695,7 +779,7 @@ async function onLoadClick() {
     function recalculateInsolationIfActive() {
         if (!insolationGrid || !insolationCalculator) return;
         if (!lastCalculatedPoints || lastCalculatedPoints.length === 0) return;
-        if (!lastActiveMesh) return;
+        if (!lastActiveMeshes || lastActiveMeshes.length === 0) return;
         
         console.log(`[App] Автоперерасчёт инсоляции для ${lastCalculatedPoints.length} точек...`);
         
@@ -709,7 +793,7 @@ async function onLoadClick() {
         // Пересчитываем с теми же точками
         const { results, stats } = insolationCalculator.calculatePoints(
             lastCalculatedPoints, 
-            lastActiveMesh,
+            null,  // Не исключаем здания — minDistance защищает от самопересечения
             120
         );
         

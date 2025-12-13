@@ -245,6 +245,9 @@ class MoveTool {
         this.selectedMesh.position.copy(this.meshStartPos);
         this.selectedMesh.rotation.z = this.meshStartRotation;
         
+        // Синхронизируем сетку с исходной позицией
+        this.onMove(this.selectedMesh);
+        
         console.log('[MoveTool] Отменено перемещение:', this.selectedMesh.userData.id);
         
         this._restoreColor(this.selectedMesh);
@@ -281,7 +284,7 @@ class MoveTool {
     
     _throttledOnMove() {
         const now = Date.now();
-        if (!this._lastMoveCall || now - this._lastMoveCall > 200) {  // 200ms throttle
+        if (!this._lastMoveCall || now - this._lastMoveCall > 50) {  // 50ms throttle для плавности
             this._lastMoveCall = now;
             this.onMove(this.selectedMesh);
         }
@@ -371,6 +374,26 @@ class MoveTool {
         
         // Вызываем callback для перерасчёта
         this._throttledOnMove();
+    }
+    
+    /**
+     * Принудительный сброс состояния (для удаления объекта)
+     * Не пытается вернуть объект на место
+     */
+    forceReset() {
+        if (this.selectedMesh) {
+            this._restoreColor(this.selectedMesh);
+        }
+        
+        this.selectedMesh = null;
+        this.isMoving = false;
+        this.controls.enabled = true;
+        
+        if (this.enabled) {
+            this.renderer.domElement.style.cursor = 'move';
+        }
+        
+        console.log('[MoveTool] Принудительный сброс');
     }
 }
 
