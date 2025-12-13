@@ -130,12 +130,10 @@ class ViolationHighlighter {
         
         // Сохраняем оригинальный цвет
         const originalColor = mesh.material.color.getHex();
-        const originalEmissive = mesh.material.emissive ? mesh.material.emissive.getHex() : 0x000000;
         
         this.highlightedBuildings.set(meshId, {
             mesh: mesh,
-            originalColor: originalColor,
-            originalEmissive: originalEmissive
+            originalColor: originalColor
         });
         
         // Цвет подсветки
@@ -159,12 +157,6 @@ class ViolationHighlighter {
         const originalColor = data.originalColor;
         let isHighlighted = false;
         
-        // Включаем emissive для яркости
-        if (mesh.material.emissive) {
-            mesh.material.emissive.setHex(highlightColor);
-            mesh.material.emissiveIntensity = 0;
-        }
-        
         const animationId = Symbol('flash');
         this.activeAnimations.set(meshId, animationId);
         
@@ -177,25 +169,17 @@ class ViolationHighlighter {
             
             if (isHighlighted) {
                 mesh.material.color.setHex(highlightColor);
-                if (mesh.material.emissive) {
-                    mesh.material.emissiveIntensity = 0.3;
-                }
                 flashCount++;
             } else {
                 mesh.material.color.setHex(originalColor);
-                if (mesh.material.emissive) {
-                    mesh.material.emissiveIntensity = 0;
-                }
             }
             
             if (flashCount >= maxFlashes && !isHighlighted) {
-                // Закончили мигать — оставляем слабую подсветку
-                mesh.material.color.setHex(this._blendColors(originalColor, highlightColor, 0.3));
-                if (mesh.material.emissive) {
-                    mesh.material.emissive.setHex(highlightColor);
-                    mesh.material.emissiveIntensity = 0.1;
-                }
+                // Закончили мигать — возвращаем оригинальный цвет
+                mesh.material.color.setHex(originalColor);
                 this.activeAnimations.delete(meshId);
+                // Удаляем из списка подсвеченных
+                this.highlightedBuildings.delete(meshId);
                 return;
             }
             
@@ -206,35 +190,12 @@ class ViolationHighlighter {
     }
     
     /**
-     * Смешать два цвета
-     */
-    _blendColors(color1, color2, factor) {
-        const r1 = (color1 >> 16) & 0xff;
-        const g1 = (color1 >> 8) & 0xff;
-        const b1 = color1 & 0xff;
-        
-        const r2 = (color2 >> 16) & 0xff;
-        const g2 = (color2 >> 8) & 0xff;
-        const b2 = color2 & 0xff;
-        
-        const r = Math.round(r1 + (r2 - r1) * factor);
-        const g = Math.round(g1 + (g2 - g1) * factor);
-        const b = Math.round(b1 + (b2 - b1) * factor);
-        
-        return (r << 16) | (g << 8) | b;
-    }
-    
-    /**
      * Удалить подсветку здания
      */
     removeHighlight(meshId) {
         const data = this.highlightedBuildings.get(meshId);
         if (data && data.mesh && data.mesh.material) {
             data.mesh.material.color.setHex(data.originalColor);
-            if (data.mesh.material.emissive) {
-                data.mesh.material.emissive.setHex(data.originalEmissive);
-                data.mesh.material.emissiveIntensity = 0;
-            }
         }
         this.highlightedBuildings.delete(meshId);
         this.activeAnimations.delete(meshId);
@@ -247,10 +208,6 @@ class ViolationHighlighter {
         this.highlightedBuildings.forEach((data, meshId) => {
             if (data.mesh && data.mesh.material) {
                 data.mesh.material.color.setHex(data.originalColor);
-                if (data.mesh.material.emissive) {
-                    data.mesh.material.emissive.setHex(data.originalEmissive);
-                    data.mesh.material.emissiveIntensity = 0;
-                }
             }
         });
         this.highlightedBuildings.clear();

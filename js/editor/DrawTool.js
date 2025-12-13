@@ -445,7 +445,9 @@ class DrawTool {
         
         const material = new THREE.MeshLambertMaterial({ 
             color: 0x5b8dd9,
-            side: THREE.DoubleSide
+            side: THREE.DoubleSide,
+            transparent: true,
+            opacity: 0.9
         });
         
         const mesh = new THREE.Mesh(geometry, material);

@@ -898,3 +898,23 @@ button:disabled {
     opacity: 0.5;
     pointer-events: none;
 }
+
+/* ============================================
+   Координаты центра сцены
+   ============================================ */
+
+.coords-display {
+    position: fixed;
+    bottom: 12px;
+    left: 12px;
+    background: rgba(255, 255, 255, 0.9);
+    padding: 6px 10px;
+    border-radius: var(--radius-sm);
+    font-size: 12px;
+    font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
+    color: var(--text-secondary);
+    box-shadow: var(--shadow-sm);
+    z-index: 100;
+    pointer-events: none;
+    backdrop-filter: blur(4px);
+}

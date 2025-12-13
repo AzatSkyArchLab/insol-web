@@ -64,6 +64,30 @@ let lastCalculationResults = null;
 // Инициализация
 // ============================================
 
+/**
+ * Обновить отображение координат центра сцены
+ */
+function updateCoordsDisplay(lat, lon) {
+    let display = document.getElementById('coords-display');
+    
+    if (!display) {
+        display = document.createElement('div');
+        display.id = 'coords-display';
+        display.className = 'coords-display hidden';
+        document.body.appendChild(display);
+    }
+    
+    if (lat !== undefined && lon !== undefined) {
+        // Форматируем координаты: N 55.7558°, E 37.6173°
+        const latDir = lat >= 0 ? 'N' : 'S';
+        const lonDir = lon >= 0 ? 'E' : 'W';
+        display.textContent = `${latDir} ${Math.abs(lat).toFixed(5)}°, ${lonDir} ${Math.abs(lon).toFixed(5)}°`;
+        display.classList.remove('hidden');
+    } else {
+        display.classList.add('hidden');
+    }
+}
+
 function init() {
     mapEngine = new MapEngine('map', {
         center: [37.6173, 55.7558],
@@ -366,6 +390,9 @@ async function onLoadClick() {
     
     coords = new Coordinates(centerLat, centerLon);
     
+    // Показываем координаты центра
+    updateCoordsDisplay(centerLat, centerLon);
+    
     const buildings = await buildingLoader.loadBuildings(
         selectedBounds.south,
         selectedBounds.west,
@@ -594,6 +621,9 @@ async function onLoadClick() {
             violationHighlighter.clearAllHighlights();
             violationHighlighter.clearBaseline();
         }
+        
+        // Скрываем координаты
+        updateCoordsDisplay();
         
         // Выключаем инструменты
         if (moveTool) moveTool.disable();
