@@ -329,6 +329,19 @@ button:disabled {
     color: white;
 }
 
+.editor-toolbar .tool-separator {
+    width: 1px;
+    height: 24px;
+    background: var(--border);
+    margin: 0 4px;
+    align-self: center;
+}
+
+.editor-toolbar button.danger:hover {
+    background: var(--error);
+    color: white;
+}
+
 /* ============================================
    Building Card
    ============================================ */

@@ -17,13 +17,13 @@ import { EditorToolbar } from './editor/EditorToolbar.js';
 import { InsolationGrid } from './insolation/InsolationGrid.js';
 import { DrawTool } from './editor/DrawTool.js';
 import { InsolationCalculator } from './insolation/InsolationCalculator.js';
+import { MoveTool } from './editor/MoveTool.js';
+import { Compass } from './editor/Compass.js';
+
+//import { VertexEditor } from './editor/VertexEditor.js'; // TODO: интегрировать позже
 
 
-//import { MoveTool } from './editor/MoveTool.js'; Добавим это когда-нибудь потоооом :)
-//import { VertexEditor } from './editor/VertexEditor.js'; и это :)
-
-
-console.log('=== Insol Web v 0.1 ===');
+console.log('=== Insol Web v 0.2 ===');
 
 // ============================================
 // Глобальные переменные
@@ -41,12 +41,17 @@ let selectModeActive = false;
 let heightEditor = null;
 let editorToolbar = null;
 let drawTool = null;
+let moveTool = null;
 let insolationGrid = null;
 let insolationCalculator = null;
 let selectedResultIndex = null;
+let compass = null;
 
+// Для автоперерасчёта инсоляции
+let lastCalculatedPoints = null;
+let lastActiveMesh = null;
+let lastCalculationResults = null;
 
-//let moveTool = null;
 //let vertexEditor = null;
 
 // ============================================
@@ -175,28 +180,8 @@ function showBuildingCard(data) {
             heightEditor.deactivate();
         }
         
-        // Очищаем сетку и связанные UI элементы
-        if (insolationGrid) {
-            insolationGrid.clearGrid();
-            
-            const btn = document.getElementById('insolation-grid-btn');
-            btn.classList.remove('active');
-            btn.textContent = 'Инсоляционная сетка';
-            
-            const selectAllBtn = document.getElementById('select-all-points-btn');
-            const calcBtn = document.getElementById('calculate-insolation-btn');
-            if (selectAllBtn) selectAllBtn.classList.add('hidden');
-            if (calcBtn) calcBtn.classList.add('hidden');
-        }
-        
-        // Очищаем лучи
-        if (insolationCalculator) {
-            insolationCalculator.hideRays();
-            insolationCalculator.hideAllRays();
-        }
-        
-        // Скрываем панель результатов
-        hideInsolationResults();
+        // НЕ очищаем сетку инсоляции - она должна оставаться для перерасчёта
+        // Сетка очищается только по кнопке "Убрать сетку"
         
         if (selectTool) {
             selectTool.deselect();
@@ -356,14 +341,19 @@ async function onLoadClick() {
             // Обновляем карточку в реальном времени
             document.getElementById('card-height').textContent = `${height} м`;
             document.getElementById('card-height-source').textContent = 'Редактирование';
+            
+            // Перерасчёт инсоляции в реальном времени
+            recalculateInsolationIfActive();
         },
         onComplete: (mesh, height) => {
             console.log(`[App] Высота изменена: ${mesh.userData.id} → ${height}м`);
+            
+            // Финальный перерасчёт инсоляции
+            recalculateInsolationIfActive();
         }
     });
 
-        // Панель инструментов
-
+    // Панель инструментов
     editorToolbar = new EditorToolbar({
         onChange: onToolChange
     });
@@ -376,13 +366,47 @@ async function onLoadClick() {
             editorToolbar.setTool('select');
             selectTool.select(mesh);
             showBuildingCard(mesh.userData);
+            
+            // Перерасчёт инсоляции — новое здание может затенять
+            recalculateInsolationIfActive();
         }
     });
 
-    initInsolationTools();  // ← Вызываем функцию!
+    // Инструмент перемещения
+    moveTool = new MoveTool(sceneManager, {
+        onChange: (mesh) => {
+            console.log(`[App] Здание перемещено: ${mesh.userData.id}`);
+            
+            // Перерасчёт инсоляции если сетка активна
+            recalculateInsolationIfActive();
+        },
+        onMove: (mesh) => {
+            // Перерасчёт в реальном времени (throttled в MoveTool)
+            recalculateInsolationIfActive();
+        }
+    });
+    
+    // Создаём компас (стили добавляются сразу)
+    compass = new Compass();
+    
+    // Обновляем компас при вращении камеры
+    sceneManager.controls.addEventListener('change', () => {
+        if (compass) {
+            compass.updateFromControls(sceneManager.controls);
+        }
+    });
+    
+    // Инициализация компаса после создания toolbar
+    setTimeout(() => {
+        compass.init();
+        compass.updateFromControls(sceneManager.controls);
+    }, 0);
+
+    initInsolationTools();
 
     window.editorToolbar = editorToolbar;
     window.drawTool = drawTool;
+    window.moveTool = moveTool;
 
     
     // Статистика
@@ -425,28 +449,58 @@ async function onLoadClick() {
         // Очищаем инсоляцию
         if (insolationGrid) {
             insolationGrid.clearGrid();
+            lastCalculatedPoints = null;
+            lastCalculationResults = null;
+            lastActiveMesh = null;
         }
         if (insolationCalculator) {
             insolationCalculator.hideRays();
         }
         
+        // Выключаем инструменты
+        if (moveTool) moveTool.disable();
+        if (drawTool) drawTool.disable();
+        
         console.log('[App] Возврат к карте');
     }
 
     function onToolChange(tool, prevTool) {
+        console.log(`[App] onToolChange: ${prevTool} → ${tool}`);
+        
+        // Для delete не отключаем инструменты - просто удаляем и возвращаемся
+        if (tool === 'delete') {
+            deleteSelectedBuilding();
+            return;
+        }
+        
+        // Выключаем все инструменты
         if (drawTool) drawTool.disable();
+        if (moveTool) moveTool.disable();
         if (heightEditor) heightEditor.deactivate();
+        if (selectTool) selectTool.setEnabled(false);
+        
+        // Гарантируем что камера разблокирована
+        if (sceneManager && sceneManager.controls) {
+            sceneManager.controls.enabled = true;
+        }
         
         switch(tool) {
             case 'select':
+                if (selectTool) selectTool.setEnabled(true);
                 break;
+                
+            case 'move':
+                // Только скрываем карточку, но сохраняем выделение для возможного удаления
+                document.getElementById('building-card').classList.add('hidden');
+                if (heightEditor && heightEditor.isActive()) {
+                    heightEditor.deactivate();
+                }
+                if (moveTool) moveTool.enable();
+                break;
+                
             case 'draw':
-                if (selectTool) selectTool.deselect();
                 closeBuildingCard();
-                drawTool.enable();
-                break;
-            case 'delete':
-                deleteSelectedBuilding();
+                if (drawTool) drawTool.enable();
                 break;
         }
     }
@@ -466,6 +520,34 @@ async function onLoadClick() {
         }
         
         if (confirm(`Удалить здание ${mesh.userData.id}?`)) {
+            // Если удаляем здание с активной сеткой инсоляции — очищаем сетку
+            if (insolationGrid && insolationGrid.getActiveMesh() === mesh) {
+                insolationGrid.clearGrid();
+                lastCalculatedPoints = null;
+                lastActiveMesh = null;
+                lastCalculationResults = null;
+                
+                // Скрываем UI инсоляции
+                const gridBtn = document.getElementById('insolation-grid-btn');
+                const selectAllBtn = document.getElementById('select-all-points-btn');
+                const calcBtn = document.getElementById('calculate-insolation-btn');
+                if (gridBtn) {
+                    gridBtn.classList.remove('active');
+                    gridBtn.textContent = 'Инсоляционная сетка';
+                }
+                if (selectAllBtn) selectAllBtn.classList.add('hidden');
+                if (calcBtn) calcBtn.classList.add('hidden');
+                
+                // Скрываем панель результатов и лучи
+                hideInsolationResults();
+                if (insolationCalculator) {
+                    insolationCalculator.hideRays();
+                    insolationCalculator.hideAllRays();
+                }
+                
+                console.log('[App] Сетка инсоляции очищена (здание удалено)');
+            }
+            
             const group = sceneManager.getBuildingsGroup();
             group.remove(mesh);
             mesh.geometry.dispose();
@@ -475,6 +557,9 @@ async function onLoadClick() {
             closeBuildingCard();
             
             console.log(`[App] Удалено: ${mesh.userData.id}`);
+            
+            // Перерасчёт инсоляции — удалённое здание могло затенять другие
+            recalculateInsolationIfActive();
         }
     }
 
@@ -495,6 +580,9 @@ async function onLoadClick() {
         if (insolationGrid.getActiveMesh() === selectedMesh) {
             // Убираем сетку
             insolationGrid.clearGrid();
+            lastCalculatedPoints = null;
+            lastCalculationResults = null;
+            lastActiveMesh = null;
             btn.classList.remove('active');
             btn.textContent = 'Инсоляционная сетка';
             selectAllBtn.classList.add('hidden');
@@ -570,6 +658,10 @@ async function onLoadClick() {
         
         const activeMesh = insolationGrid.getActiveMesh();
         
+        // Сохраняем для автоперерасчёта
+        lastCalculatedPoints = selectedPoints;
+        lastActiveMesh = activeMesh;
+        
         console.log(`[App] Расчёт инсоляции для ${selectedPoints.length} точек...`);
         
         const calcBtn = document.getElementById('calculate-insolation-btn');
@@ -583,6 +675,9 @@ async function onLoadClick() {
                 120
             );
             
+            // Сохраняем результаты для обновления лучей
+            lastCalculationResults = results;
+            
             results.forEach(r => {
                 insolationGrid.setPointResult(r.point.index, r.evaluation);
             });
@@ -592,6 +687,84 @@ async function onLoadClick() {
             calcBtn.textContent = 'Рассчитать инсоляцию';
             calcBtn.disabled = false;
         }, 100);
+    }
+    
+    /**
+     * Перерасчёт инсоляции если есть активная сетка и рассчитанные точки
+     */
+    function recalculateInsolationIfActive() {
+        if (!insolationGrid || !insolationCalculator) return;
+        if (!lastCalculatedPoints || lastCalculatedPoints.length === 0) return;
+        if (!lastActiveMesh) return;
+        
+        console.log(`[App] Автоперерасчёт инсоляции для ${lastCalculatedPoints.length} точек...`);
+        
+        // Запоминаем состояние лучей ДО перерасчёта
+        const toggleBtn = document.getElementById('toggle-rays-btn');
+        const toggleAllBtn = document.getElementById('toggle-all-rays-btn');
+        const allRaysWereActive = toggleAllBtn && toggleAllBtn.classList.contains('active');
+        const singleRaysWereActive = toggleBtn && toggleBtn.classList.contains('active');
+        const savedResultIndex = selectedResultIndex;
+        
+        // Пересчитываем с теми же точками
+        const { results, stats } = insolationCalculator.calculatePoints(
+            lastCalculatedPoints, 
+            lastActiveMesh,
+            120
+        );
+        
+        // Сохраняем результаты для обновления лучей
+        lastCalculationResults = results;
+        
+        results.forEach(r => {
+            insolationGrid.setPointResult(r.point.index, r.evaluation);
+        });
+        
+        // Обновляем статистику БЕЗ сброса UI лучей
+        document.getElementById('stat-pass').textContent = stats.pass;
+        document.getElementById('stat-warning').textContent = stats.warning;
+        document.getElementById('stat-fail').textContent = stats.fail;
+        
+        // Обновляем лучи если они были показаны
+        if (allRaysWereActive) {
+            insolationCalculator.showAllRays();
+            console.log('[App] Лучи обновлены (все)');
+        } else if (singleRaysWereActive && savedResultIndex !== null) {
+            const r = lastCalculationResults[savedResultIndex];
+            if (r) {
+                insolationCalculator.showRays(r.point, r.collision);
+                console.log(`[App] Лучи обновлены (точка ${savedResultIndex})`);
+            }
+        }
+    }
+    
+    /**
+     * Обновляем лучи если они были видимы
+     */
+    function updateRaysIfVisible() {
+        if (!insolationCalculator || !lastCalculationResults) return;
+        
+        const toggleBtn = document.getElementById('toggle-rays-btn');
+        const toggleAllBtn = document.getElementById('toggle-all-rays-btn');
+        
+        const allRaysActive = toggleAllBtn && toggleAllBtn.classList.contains('active');
+        const singleRaysActive = toggleBtn && toggleBtn.classList.contains('active');
+        
+        console.log(`[App] updateRaysIfVisible: allRays=${allRaysActive}, singleRays=${singleRaysActive}, selectedIdx=${selectedResultIndex}`);
+        
+        // Если показаны все лучи
+        if (allRaysActive) {
+            insolationCalculator.showAllRays();
+            console.log('[App] Лучи обновлены (все)');
+        }
+        // Если показаны лучи одной точки
+        else if (singleRaysActive && selectedResultIndex !== null) {
+            const r = lastCalculationResults[selectedResultIndex];
+            if (r) {
+                insolationCalculator.showRays(r.point, r.collision);
+                console.log(`[App] Лучи обновлены (точка ${selectedResultIndex})`);
+            }
+        }
     }
 
     function showInsolationResults(results, stats) {
