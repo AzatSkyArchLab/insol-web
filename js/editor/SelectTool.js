@@ -57,7 +57,11 @@ class SelectTool {
         this.raycaster.setFromCamera(this.mouse, this.camera);
         
         const buildings = this.buildingsGroup.children.filter(child => {
-            return child.visible && child.userData.type === 'building';
+            // Обычные здания
+            if (child.visible && child.userData.type === 'building') return true;
+            // Solar potential даже если заблокирован (type=ghost)
+            if (child.visible && child.userData.subtype === 'solar-potential') return true;
+            return false;
         });
         
         if (buildings.length === 0) {

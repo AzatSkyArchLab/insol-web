@@ -20,9 +20,11 @@ class DrawTool {
         this.previewLine = null;
         this.previewMesh = null;
         this.vertexHelpers = [];
-        this.distanceLabels = [];
         this._dynamicLine = null;
-        this._dynamicLabel = null;
+        
+        // HTML label для расстояний
+        this.labelDiv = null;
+        this._createLabel();
         
         // Параметры
         this.defaultHeight = options.defaultHeight || 9;
@@ -58,6 +60,48 @@ class DrawTool {
         console.log('[DrawTool] Создан');
     }
     
+    /**
+     * Создать HTML label для размеров
+     */
+    _createLabel() {
+        this.labelDiv = document.createElement('div');
+        this.labelDiv.id = 'draw-tool-label';
+        this.labelDiv.style.cssText = `
+            position: fixed;
+            background: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-family: monospace;
+            pointer-events: none;
+            z-index: 10000;
+            display: none;
+            white-space: nowrap;
+        `;
+        document.body.appendChild(this.labelDiv);
+    }
+    
+    /**
+     * Показать label с текстом
+     */
+    _showLabel(text, screenX, screenY) {
+        if (!this.labelDiv) return;
+        this.labelDiv.textContent = text;
+        this.labelDiv.style.left = (screenX + 15) + 'px';
+        this.labelDiv.style.top = (screenY - 10) + 'px';
+        this.labelDiv.style.display = 'block';
+    }
+    
+    /**
+     * Скрыть label
+     */
+    _hideLabel() {
+        if (this.labelDiv) {
+            this.labelDiv.style.display = 'none';
+        }
+    }
+    
     enable() {
         if (this.enabled) return;
         this.enabled = true;
@@ -86,6 +130,7 @@ class DrawTool {
         this.renderer.domElement.style.cursor = '';
         
         this._clearPreview();
+        this._hideLabel();
         this.points = [];
         
         console.log('[DrawTool] Выключён');
@@ -147,13 +192,31 @@ class DrawTool {
     }
     
     _onMouseMove(event) {
-        if (this.points.length === 0) return;
-        
         const point = this._getGroundPoint(event);
-        if (!point) return;
+        if (!point) {
+            this._hideLabel();
+            return;
+        }
+        
+        if (this.points.length === 0) {
+            this._hideLabel();
+            return;
+        }
         
         this._updatePreviewLine(point);
-        this._updateDynamicLabel(point);
+        
+        // Показываем расстояние от последней точки
+        const lastPoint = this.points[this.points.length - 1];
+        const distance = Math.sqrt(
+            Math.pow(point.x - lastPoint.x, 2) + 
+            Math.pow(point.y - lastPoint.y, 2)
+        );
+        
+        if (distance > 0.5) {
+            this._showLabel(`${distance.toFixed(1)} м`, event.clientX, event.clientY);
+        } else {
+            this._hideLabel();
+        }
     }
     
     _getGroundPoint(event) {
@@ -168,52 +231,6 @@ class DrawTool {
             return intersection;
         }
         return null;
-    }
-    
-    /**
-     * Создать подпись с расстоянием
-     */
-    _createDistanceLabel(distance, position) {
-        const canvas = document.createElement('canvas');
-        canvas.width = 128;
-        canvas.height = 48;
-        
-        const ctx = canvas.getContext('2d');
-        
-        // Фон
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.95)';
-        ctx.beginPath();
-        ctx.roundRect(4, 8, 120, 32, 6);
-        ctx.fill();
-        
-        // Рамка
-        ctx.strokeStyle = '#1a73e8';
-        ctx.lineWidth = 2;
-        ctx.stroke();
-        
-        // Текст
-        ctx.fillStyle = '#202124';
-        ctx.font = 'bold 18px -apple-system, BlinkMacSystemFont, sans-serif';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(`${distance.toFixed(1)} м`, 64, 24);
-        
-        const texture = new THREE.CanvasTexture(canvas);
-        const material = new THREE.SpriteMaterial({ 
-            map: texture, 
-            transparent: true,
-            depthTest: false,
-            depthWrite: false,
-            sizeAttenuation: false
-        });
-        
-        const sprite = new THREE.Sprite(material);
-        sprite.position.copy(position);
-        sprite.position.z = 3;
-        sprite.scale.set(0.12, 0.05, 1);
-        sprite.renderOrder = 1000;
-        
-        return sprite;
     }
     
     _updatePreview() {
@@ -258,64 +275,6 @@ class DrawTool {
             this.previewMesh.position.z = 0.05;
             this.scene.add(this.previewMesh);
         }
-        
-        // Подписи расстояний между точками
-        this._updateDistanceLabels();
-    }
-    
-    /**
-     * Обновить подписи расстояний для всех рёбер
-     */
-    _updateDistanceLabels() {
-        // Очищаем старые
-        this.distanceLabels.forEach(label => {
-            if (label.material.map) label.material.map.dispose();
-            label.material.dispose();
-            this.scene.remove(label);
-        });
-        this.distanceLabels = [];
-        
-        if (this.points.length < 2) return;
-        
-        // Подписи для каждого ребра
-        for (let i = 0; i < this.points.length - 1; i++) {
-            const p1 = this.points[i];
-            const p2 = this.points[i + 1];
-            
-            const distance = Math.sqrt(
-                Math.pow(p2.x - p1.x, 2) + Math.pow(p2.y - p1.y, 2)
-            );
-            
-            const midPoint = new THREE.Vector3(
-                (p1.x + p2.x) / 2,
-                (p1.y + p2.y) / 2,
-                0
-            );
-            
-            const label = this._createDistanceLabel(distance, midPoint);
-            this.scene.add(label);
-            this.distanceLabels.push(label);
-        }
-        
-        // Замыкающее ребро (если 3+ точки)
-        if (this.points.length >= 3) {
-            const p1 = this.points[this.points.length - 1];
-            const p2 = this.points[0];
-            
-            const distance = Math.sqrt(
-                Math.pow(p2.x - p1.x, 2) + Math.pow(p2.y - p1.y, 2)
-            );
-            
-            const midPoint = new THREE.Vector3(
-                (p1.x + p2.x) / 2,
-                (p1.y + p2.y) / 2,
-                0
-            );
-            
-            const label = this._createDistanceLabel(distance, midPoint);
-            this.scene.add(label);
-            this.distanceLabels.push(label);
-        }
     }
     
     _updatePreviewLine(currentPoint) {
@@ -340,39 +299,6 @@ class DrawTool {
             transparent: true 
         }));
         this.scene.add(this._dynamicLine);
-    }
-    
-    /**
-     * Обновить динамическую подпись (от последней точки до курсора)
-     */
-    _updateDynamicLabel(currentPoint) {
-        // Удаляем старую
-        if (this._dynamicLabel) {
-            if (this._dynamicLabel.material.map) this._dynamicLabel.material.map.dispose();
-            this._dynamicLabel.material.dispose();
-            this.scene.remove(this._dynamicLabel);
-            this._dynamicLabel = null;
-        }
-        
-        if (this.points.length === 0) return;
-        
-        const lastPoint = this.points[this.points.length - 1];
-        const distance = Math.sqrt(
-            Math.pow(currentPoint.x - lastPoint.x, 2) + 
-            Math.pow(currentPoint.y - lastPoint.y, 2)
-        );
-        
-        // Не показывать если слишком близко
-        if (distance < 0.5) return;
-        
-        const midPoint = new THREE.Vector3(
-            (lastPoint.x + currentPoint.x) / 2,
-            (lastPoint.y + currentPoint.y) / 2,
-            0
-        );
-        
-        this._dynamicLabel = this._createDistanceLabel(distance, midPoint);
-        this.scene.add(this._dynamicLabel);
     }
     
     _clearPreview() {
@@ -403,22 +329,6 @@ class DrawTool {
             this._dynamicLine.geometry.dispose();
             this.scene.remove(this._dynamicLine);
             this._dynamicLine = null;
-        }
-        
-        // Подписи расстояний
-        this.distanceLabels.forEach(label => {
-            if (label.material.map) label.material.map.dispose();
-            label.material.dispose();
-            this.scene.remove(label);
-        });
-        this.distanceLabels = [];
-        
-        // Динамическая подпись
-        if (this._dynamicLabel) {
-            if (this._dynamicLabel.material.map) this._dynamicLabel.material.map.dispose();
-            this._dynamicLabel.material.dispose();
-            this.scene.remove(this._dynamicLabel);
-            this._dynamicLabel = null;
         }
     }
     

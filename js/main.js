@@ -22,6 +22,10 @@ import { Compass } from './editor/Compass.js';
 import { ProjectExporter } from './io/ProjectExporter.js';
 import { ProjectImporter } from './io/ProjectImporter.js';
 import { ViolationHighlighter } from './insolation/ViolationHighlighter.js';
+import { SolarPotential } from './analysis/SolarPotential.js';
+import { TowerPlacer } from './analysis/TowerPlacer.js';
+import { TowerPlacerUI } from './analysis/TowerPlacerUI.js';
+import { RectTool } from './editor/RectTool.js';
 
 //import { VertexEditor } from './editor/VertexEditor.js'; // TODO: интегрировать позже
 
@@ -44,6 +48,7 @@ let selectModeActive = false;
 let heightEditor = null;
 let editorToolbar = null;
 let drawTool = null;
+let rectTool = null;
 let moveTool = null;
 let insolationGrid = null;
 let insolationCalculator = null;
@@ -52,6 +57,11 @@ let compass = null;
 let projectExporter = null;
 let projectImporter = null;
 let violationHighlighter = null;
+let solarPotential = null;
+let potentialMode = false;  // Режим рисования полигона для потенциала
+let towerPlacer = null;
+let towerPlacerUI = null;
+let generationMode = false;  // Режим рисования полигона для генерации
 
 // Для автоперерасчёта инсоляции
 let lastCalculatedPoints = null;
@@ -428,9 +438,25 @@ async function onLoadClick() {
     // Инструмент выбора
     selectTool = new SelectTool(sceneManager, {
         onSelect: (data, mesh) => {
+            // Если кликнули на потенциал — показываем панель управления
+            if (data.subtype === 'solar-potential' && solarPotential) {
+                solarPotential.showPanel();
+                solarPotential.select();
+                return;
+            }
+            
+            // Снимаем выделение с потенциала если кликнули на другое
+            if (solarPotential) {
+                solarPotential.deselect();
+            }
+            
             showBuildingCard(data);
         },
         onMultiSelect: (meshes) => {
+            // Снимаем выделение с потенциала
+            if (solarPotential) {
+                solarPotential.deselect();
+            }
             showMultiSelectCard(meshes);
         }
     });
@@ -498,12 +524,78 @@ async function onLoadClick() {
     drawTool = new DrawTool(sceneManager, coords, {
         onCreate: (mesh) => {
             console.log(`[App] Создан полигон: ${mesh.userData.id}`);
-            // Переключаемся на выбор и выделяем созданное здание
+            
+            // Проверяем режим инсоляционного потенциала
+            if (potentialMode) {
+                // Получаем точки полигона
+                const points = mesh.userData.basePoints;
+                
+                // Удаляем временный меш
+                const group = sceneManager.getBuildingsGroup();
+                group.remove(mesh);
+                mesh.geometry.dispose();
+                mesh.material.dispose();
+                
+                // Выключаем режим потенциала
+                potentialMode = false;
+                editorToolbar.setTool('select');
+                
+                // Запускаем расчёт с диалогом настроек
+                if (points && points.length >= 3) {
+                    console.log(`[App] Запуск расчёта потенциала для ${points.length} точек`);
+                    solarPotential.showSettingsAndCalculate(points);
+                } else {
+                    alert('Недостаточно точек для расчёта');
+                }
+                return;
+            }
+            
+            // Проверяем режим генерации башен
+            if (generationMode) {
+                // Получаем точки полигона
+                const points = mesh.userData.basePoints;
+                
+                // Делаем полигон обычным зданием (можно редактировать/удалять)
+                mesh.material.color.setHex(0x2196f3);
+                mesh.material.opacity = 0.3;
+                mesh.material.transparent = true;
+                // type остаётся 'building' - можно выбирать, удалять, менять высоту
+                
+                // Выключаем режим генерации
+                generationMode = false;
+                editorToolbar.setTool('select');
+                
+                // Открываем UI генерации с полигоном
+                if (points && points.length >= 3 && towerPlacerUI) {
+                    console.log(`[App] Запуск генерации для ${points.length} точек`);
+                    towerPlacerUI.show(points, mesh);
+                } else {
+                    alert('Недостаточно точек для генерации');
+                }
+                return;
+            }
+            
+            // Обычное создание здания
             editorToolbar.setTool('select');
             selectTool.select(mesh);
             showBuildingCard(mesh.userData);
             
             // Перерасчёт инсоляции — новое здание может затенять
+            recalculateInsolationIfActive();
+        }
+    });
+
+    // Инструмент рисования прямоугольников
+    rectTool = new RectTool(sceneManager, coords, {
+        onCreate: (mesh) => {
+            console.log(`[App] Создан прямоугольник: ${mesh.userData.id}`);
+            
+            // Переключаемся на выбор
+            editorToolbar.setTool('select');
+            selectTool.select(mesh);
+            showBuildingCard(mesh.userData);
+            
+            // Перерасчёт инсоляции
             recalculateInsolationIfActive();
         }
     });
@@ -622,6 +714,12 @@ async function onLoadClick() {
             violationHighlighter.clearBaseline();
         }
         
+        // Очищаем инсоляционный потенциал
+        if (solarPotential) {
+            solarPotential.clear();
+        }
+        potentialMode = false;
+        
         // Скрываем координаты
         updateCoordsDisplay();
         
@@ -643,6 +741,7 @@ async function onLoadClick() {
         
         // Выключаем все инструменты
         if (drawTool) drawTool.disable();
+        if (rectTool) rectTool.disable();
         if (moveTool) moveTool.disable();
         if (heightEditor) heightEditor.deactivate();
         if (selectTool) selectTool.setEnabled(false);
@@ -654,10 +753,14 @@ async function onLoadClick() {
         
         switch(tool) {
             case 'select':
+                potentialMode = false;
+                generationMode = false;
                 if (selectTool) selectTool.setEnabled(true);
                 break;
                 
             case 'move':
+                potentialMode = false;
+                generationMode = false;
                 // Только скрываем карточку, но сохраняем выделение для возможного удаления
                 document.getElementById('building-card').classList.add('hidden');
                 if (heightEditor && heightEditor.isActive()) {
@@ -668,7 +771,36 @@ async function onLoadClick() {
                 
             case 'draw':
                 closeBuildingCard();
+                potentialMode = false;
+                generationMode = false;
+                
+                // Проверяем режим рисования
+                const drawMode = editorToolbar.getDrawMode();
+                if (drawMode === 'rect') {
+                    if (rectTool) rectTool.enable();
+                    console.log('[App] Режим рисования: прямоугольник');
+                } else {
+                    if (drawTool) drawTool.enable();
+                    console.log('[App] Режим рисования: свободный полигон');
+                }
+                break;
+                
+            case 'potential':
+                // Активируем режим потенциала и запускаем рисование
+                closeBuildingCard();
+                potentialMode = true;
+                generationMode = false;
                 if (drawTool) drawTool.enable();
+                console.log('[App] Режим инсоляционного потенциала');
+                break;
+                
+            case 'generate':
+                // Активируем режим генерации и запускаем рисование
+                closeBuildingCard();
+                potentialMode = false;
+                generationMode = true;
+                if (drawTool) drawTool.enable();
+                console.log('[App] Режим генерации застройки');
                 break;
         }
     }
@@ -1075,6 +1207,39 @@ async function onLoadClick() {
         });
         window.violationHighlighter = violationHighlighter;
         
+        // Инсоляционный потенциал
+        solarPotential = new SolarPotential(sceneManager, insolationCalculator, insolationGrid, {
+            cellSize: 6,        // 6x6x6 кубики
+            maxHeight: 75,      // Потолок по умолчанию
+            animationDelay: 10,
+            onProgress: (progress, iteration) => {
+                const pct = Math.round(progress * 100);
+                console.log(`[SolarPotential] Итерация ${iteration}: ${pct}%`);
+            },
+            onComplete: (stats) => {
+                console.log('[SolarPotential] Завершено:', stats);
+                alert(`Инсоляционный потенциал рассчитан!\n\nПлощадь: ${stats.totalArea.toFixed(0)} м²\nОбъём: ${stats.totalVolume.toFixed(0)} м³\nСредняя высота: ${stats.avgHeight.toFixed(1)} м\nМакс. высота: ${stats.maxHeight.toFixed(1)} м\n\nПотенциал можно удалить как обычное здание.`);
+            }
+        });
+        window.solarPotential = solarPotential;
+        
+        // Генеративное размещение башен
+        towerPlacer = new TowerPlacer(sceneManager, insolationCalculator, insolationGrid, {
+            cellSize: 6,
+            minFloors: 18,
+            maxFloors: 50
+        });
+        
+        towerPlacerUI = new TowerPlacerUI(towerPlacer, {
+            onApply: (meshes, variant) => {
+                console.log(`[App] Применён вариант: ${meshes.length} башен`);
+                // Можно добавить в insolationGrid для расчёта
+            }
+        });
+        
+        window.towerPlacer = towerPlacer;
+        window.towerPlacerUI = towerPlacerUI;
+        
         console.log('[App] Инструменты инсоляции инициализированы');
     }
 
@@ -1133,6 +1298,206 @@ function exportProjectToOBJ() {
         alert('Ошибка экспорта: ' + e.message);
     });
 }
+
+/**
+ * Запустить расчёт инсоляционного потенциала
+ */
+function startSolarPotential() {
+    if (!solarPotential) {
+        alert('Сначала загрузите область на карте');
+        return;
+    }
+    
+    if (!insolationCalculator || !insolationCalculator.sunVectors) {
+        alert('Солнечные векторы не загружены');
+        return;
+    }
+    
+    // Проверяем есть ли активная инсоляционная сетка
+    if (!insolationGrid || insolationGrid.getCalculationPoints().length === 0) {
+        alert('Сначала создайте инсоляционную сетку на жилых зданиях:\n\n1. Выделите жилые здания\n2. Нажмите "Сетка инсоляции"\n3. Затем запустите расчёт потенциала');
+        return;
+    }
+    
+    // Активируем режим рисования полигона
+    potentialMode = true;
+    
+    // Переключаемся на инструмент рисования
+    if (editorToolbar) {
+        editorToolbar.setTool('draw');
+    }
+    
+    alert('Нарисуйте полигон участка для расчёта.\n\nКлик — точка\nДвойной клик или Enter — завершить\n\nЯчейки будут расти пока не затенят окна.');
+    
+    console.log('[App] Режим инсоляционного потенциала активирован');
+}
+
+window.startSolarPotential = startSolarPotential;
+
+/**
+ * Запустить генерацию застройки
+ */
+function startTowerGeneration() {
+    if (!insolationCalculator || !insolationCalculator.isReady()) {
+        alert('Сначала загрузите область и дождитесь расчёта солнечных векторов');
+        return;
+    }
+    
+    if (!towerPlacer) {
+        alert('Генератор не инициализирован');
+        return;
+    }
+    
+    // Включаем режим генерации
+    generationMode = true;
+    
+    // Переключаем на рисование
+    if (editorToolbar) {
+        editorToolbar.setTool('generate');
+    }
+    
+    alert('Нарисуйте полигон участка для застройки.\n\nКлик — точка\nДвойной клик или Enter — завершить\n\nАлгоритм разместит башни с учётом инсоляции.');
+    
+    console.log('[App] Режим генерации застройки активирован');
+}
+
+window.startTowerGeneration = startTowerGeneration;
+
+/**
+ * Заблокировать потенциал (не влияет на лучи)
+ */
+function blockSolarPotential() {
+    if (!solarPotential || !solarPotential.resultMesh) {
+        console.warn('Потенциал не создан');
+        return;
+    }
+    solarPotential.block();
+}
+
+window.blockSolarPotential = blockSolarPotential;
+
+/**
+ * Разблокировать потенциал (влияет на лучи)
+ */
+function unblockSolarPotential() {
+    if (!solarPotential || !solarPotential.resultMesh) {
+        console.warn('Потенциал не создан');
+        return;
+    }
+    solarPotential.unblock();
+}
+
+window.unblockSolarPotential = unblockSolarPotential;
+
+/**
+ * Переключить блокировку потенциала
+ */
+function toggleSolarPotentialBlock() {
+    if (!solarPotential || !solarPotential.resultMesh) {
+        console.warn('Потенциал не создан');
+        return false;
+    }
+    return solarPotential.toggleBlock();
+}
+
+window.toggleSolarPotentialBlock = toggleSolarPotentialBlock;
+
+/**
+ * Скрыть потенциал
+ */
+function hideSolarPotential() {
+    if (!solarPotential || !solarPotential.resultMesh) {
+        return;
+    }
+    solarPotential.hide();
+}
+
+window.hideSolarPotential = hideSolarPotential;
+
+/**
+ * Показать потенциал
+ */
+function showSolarPotential() {
+    if (!solarPotential || !solarPotential.resultMesh) {
+        return;
+    }
+    solarPotential.show();
+}
+
+window.showSolarPotential = showSolarPotential;
+
+/**
+ * Переключить видимость потенциала
+ */
+function toggleSolarPotentialVisibility() {
+    if (!solarPotential || !solarPotential.resultMesh) {
+        return false;
+    }
+    return solarPotential.toggleVisibility();
+}
+
+window.toggleSolarPotentialVisibility = toggleSolarPotentialVisibility;
+
+/**
+ * Скрыть футпринт потенциала
+ */
+function hideSolarPotentialFootprint() {
+    if (!solarPotential || !solarPotential.groundOutline) {
+        return;
+    }
+    solarPotential.hideFootprint();
+}
+
+window.hideSolarPotentialFootprint = hideSolarPotentialFootprint;
+
+/**
+ * Показать футпринт потенциала
+ */
+function showSolarPotentialFootprint() {
+    if (!solarPotential || !solarPotential.groundOutline) {
+        return;
+    }
+    solarPotential.showFootprint();
+}
+
+window.showSolarPotentialFootprint = showSolarPotentialFootprint;
+
+/**
+ * Переключить видимость футпринта
+ */
+function toggleSolarPotentialFootprint() {
+    if (!solarPotential || !solarPotential.groundOutline) {
+        return false;
+    }
+    return solarPotential.toggleFootprint();
+}
+
+window.toggleSolarPotentialFootprint = toggleSolarPotentialFootprint;
+
+/**
+ * Выделить потенциал
+ */
+function selectSolarPotential() {
+    if (solarPotential && solarPotential.resultMesh) {
+        solarPotential.select();
+    }
+}
+
+window.selectSolarPotential = selectSolarPotential;
+
+/**
+ * Снять выделение потенциала
+ */
+function deselectSolarPotential() {
+    if (solarPotential && solarPotential.resultMesh) {
+        solarPotential.deselect();
+    }
+}
+
+window.deselectSolarPotential = deselectSolarPotential;
+
+// Для обратной совместимости
+window.toggleSolarPotentialGhost = toggleSolarPotentialBlock;
 
 // TODO: Импорт GeoJSON временно отключён — требует доработки
 // function importProjectFromGeoJSON() {

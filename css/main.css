@@ -410,6 +410,40 @@ button:disabled {
     margin: 4px 0;
 }
 
+/* Draw menu (рисование) */
+.draw-menu {
+    position: relative;
+}
+
+.draw-menu-btn {
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.draw-menu-btn .dropdown-arrow {
+    font-size: 10px;
+    opacity: 0.6;
+}
+
+.draw-menu-dropdown {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    margin-top: 4px;
+    min-width: 180px;
+    background: var(--bg);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-lg);
+    display: none;
+    z-index: 200;
+}
+
+.draw-menu-dropdown.visible {
+    display: block;
+}
+
 /* ============================================
    Building Card
    ============================================ */
