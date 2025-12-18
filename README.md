@@ -1,4 +1,4 @@
-# insol-web 0.2
+# insol-web 0.3
 Web-based insolation checker following GOST R 57795-2017
 
 Eng: Insol — Rapid Insolation Analysis Tool for Russian Building Standards
