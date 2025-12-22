@@ -1,0 +1,956 @@
+/* ============================================
+   Insol Web — Mapbox-inspired Design
+   Light theme, blue accent
+   ============================================ */
+
+:root {
+    --accent: #1a73e8;
+    --accent-hover: #1557b0;
+    --accent-light: #e8f0fe;
+    --bg: #ffffff;
+    --bg-secondary: #f8f9fa;
+    --bg-tertiary: #f1f3f4;
+    --border: #dadce0;
+    --text: #202124;
+    --text-secondary: #5f6368;
+    --text-tertiary: #80868b;
+    --success: #34a853;
+    --warning: #fbbc04;
+    --error: #ea4335;
+    --shadow-sm: 0 1px 2px rgba(60,64,67,0.1);
+    --shadow: 0 1px 3px rgba(60,64,67,0.15), 0 1px 2px rgba(60,64,67,0.1);
+    --shadow-lg: 0 4px 12px rgba(60,64,67,0.15);
+    --radius: 8px;
+    --radius-sm: 4px;
+    --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+body {
+    font-family: var(--font);
+    font-size: 14px;
+    color: var(--text);
+    background: var(--bg-secondary);
+    line-height: 1.5;
+    overflow: hidden;
+}
+
+.hidden {
+    display: none !important;
+}
+
+/* ============================================
+   Buttons
+   ============================================ */
+
+button {
+    font-family: var(--font);
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    border: none;
+    border-radius: var(--radius-sm);
+    padding: 8px 16px;
+    transition: all 0.15s ease;
+}
+
+button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* ============================================
+   Map Mode
+   ============================================ */
+
+#map-mode {
+    position: relative;
+    width: 100vw;
+    height: 100vh;
+}
+
+#map {
+    width: 100%;
+    height: 100%;
+}
+
+#info-panel {
+    position: absolute;
+    top: 16px;
+    left: 16px;
+    width: 280px;
+    background: var(--bg);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-lg);
+    padding: 20px;
+    z-index: 10;
+}
+
+#info-panel h3 {
+    font-size: 18px;
+    font-weight: 600;
+    margin-bottom: 8px;
+    color: var(--text);
+}
+
+#info-panel > p {
+    color: var(--text-secondary);
+    margin-bottom: 16px;
+    font-size: 13px;
+}
+
+#info-panel button {
+    width: 100%;
+    padding: 10px 16px;
+    margin-top: 8px;
+}
+
+#select-mode-btn {
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+}
+
+#select-mode-btn:hover {
+    background: var(--bg-tertiary);
+}
+
+#select-mode-btn.active {
+    background: var(--accent);
+    color: white;
+    border-color: var(--accent);
+}
+
+#load-btn {
+    background: var(--accent);
+    color: white;
+}
+
+#load-btn:hover:not(:disabled) {
+    background: var(--accent-hover);
+}
+
+#selection-info {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+    line-height: 1.6;
+}
+
+#selection-info:empty {
+    display: none;
+    margin: 0;
+    padding: 0;
+    border: none;
+}
+
+/* ============================================
+   Area Selector (MapLibre)
+   ============================================ */
+
+.maplibregl-canvas-container.maplibregl-interactive.selection-active {
+    cursor: crosshair !important;
+}
+
+.maplibregl-ctrl-group {
+    background: var(--bg) !important;
+    border-radius: var(--radius) !important;
+    box-shadow: var(--shadow) !important;
+    border: none !important;
+}
+
+.maplibregl-ctrl-group button {
+    width: 32px !important;
+    height: 32px !important;
+    border: none !important;
+}
+
+.maplibregl-ctrl-group button:focus {
+    box-shadow: none !important;
+}
+
+.maplibregl-ctrl-zoom-in,
+.maplibregl-ctrl-zoom-out,
+.maplibregl-ctrl-compass {
+    background-color: var(--bg) !important;
+}
+
+.maplibregl-ctrl-zoom-in:hover,
+.maplibregl-ctrl-zoom-out:hover,
+.maplibregl-ctrl-compass:hover {
+    background-color: var(--bg-tertiary) !important;
+}
+
+.maplibregl-ctrl-attrib {
+    font-size: 10px;
+    background: rgba(255,255,255,0.8) !important;
+    padding: 2px 6px !important;
+}
+
+.maplibregl-ctrl-attrib a {
+    color: var(--text-secondary) !important;
+}
+
+/* ============================================
+   Scene Mode
+   ============================================ */
+
+#scene-mode {
+    position: relative;
+    width: 100vw;
+    height: 100vh;
+    background: #e8eaed;
+}
+
+#scene-container {
+    width: 100%;
+    height: 100%;
+}
+
+#scene-container canvas {
+    display: block;
+}
+
+#scene-panel {
+    position: absolute;
+    top: 16px;
+    left: 16px;
+    width: 200px;
+    background: var(--bg);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-lg);
+    padding: 16px;
+    z-index: 100;
+}
+
+#scene-panel h3 {
+    font-size: 15px;
+    font-weight: 600;
+    margin-bottom: 12px;
+}
+
+#scene-panel p {
+    font-size: 13px;
+    color: var(--text-secondary);
+    margin-bottom: 12px;
+}
+
+#scene-panel #building-count {
+    font-weight: 600;
+    color: var(--text);
+}
+
+.legend {
+    margin: 12px 0;
+    padding: 12px 0;
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+}
+
+.legend-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-bottom: 6px;
+}
+
+.legend-item:last-child {
+    margin-bottom: 0;
+}
+
+.legend-color {
+    width: 12px;
+    height: 12px;
+    border-radius: 2px;
+}
+
+.legend-color.residential {
+    background: #5b8dd9;
+}
+
+.legend-color.other {
+    background: #888888;
+}
+
+#back-btn {
+    width: 100%;
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    margin-top: 8px;
+}
+
+#back-btn:hover {
+    background: var(--bg-tertiary);
+}
+
+/* ============================================
+   Editor Toolbar
+   ============================================ */
+
+.editor-toolbar {
+    position: absolute;
+    top: 16px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    gap: 2px;
+    background: var(--bg);
+    padding: 4px;
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-lg);
+    z-index: 100;
+}
+
+.editor-toolbar button {
+    padding: 8px 16px;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 13px;
+    border-radius: var(--radius-sm);
+}
+
+.editor-toolbar button:hover {
+    background: var(--bg-tertiary);
+    color: var(--text);
+}
+
+.editor-toolbar button.active {
+    background: var(--accent);
+    color: white;
+}
+
+.editor-toolbar .tool-separator {
+    width: 1px;
+    height: 24px;
+    background: var(--border);
+    margin: 0 4px;
+    align-self: center;
+}
+
+.editor-toolbar button.danger:hover {
+    background: var(--error);
+    color: white;
+}
+
+/* File Menu */
+.file-menu {
+    position: relative;
+}
+
+.file-menu-btn {
+    cursor: pointer;
+}
+
+.file-menu-dropdown {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    margin-top: 4px;
+    min-width: 200px;
+    background: var(--bg);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-lg);
+    opacity: 0;
+    visibility: hidden;
+    transform: translateY(-8px);
+    transition: all 0.15s ease;
+    z-index: 200;
+}
+
+.file-menu-dropdown.visible {
+    opacity: 1;
+    visibility: visible;
+    transform: translateY(0);
+}
+
+.dropdown-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 10px 14px;
+    background: transparent;
+    border: none;
+    color: var(--text);
+    font-size: 13px;
+    text-align: left;
+    cursor: pointer;
+    transition: background 0.1s;
+}
+
+.dropdown-item:first-child {
+    border-radius: var(--radius) var(--radius) 0 0;
+}
+
+.dropdown-item:last-child {
+    border-radius: 0 0 var(--radius) var(--radius);
+}
+
+.dropdown-item:hover {
+    background: var(--bg-tertiary);
+}
+
+.dropdown-item span {
+    font-size: 15px;
+}
+
+.dropdown-divider {
+    height: 1px;
+    background: var(--border);
+    margin: 4px 0;
+}
+
+/* Draw menu (рисование) */
+.draw-menu {
+    position: relative;
+}
+
+.draw-menu-btn {
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.draw-menu-btn .dropdown-arrow {
+    font-size: 10px;
+    opacity: 0.6;
+}
+
+.draw-menu-dropdown {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    margin-top: 4px;
+    min-width: 180px;
+    background: var(--bg);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-lg);
+    display: none;
+    z-index: 200;
+}
+
+.draw-menu-dropdown.visible {
+    display: block;
+}
+
+/* ============================================
+   Building Card
+   ============================================ */
+
+#building-card {
+    position: absolute;
+    top: 16px;
+    right: 16px;
+    width: 280px;
+    background: var(--bg);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-lg);
+    overflow: hidden;
+    z-index: 100;
+}
+
+.card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 16px;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
+}
+
+#card-title {
+    font-size: 14px;
+    font-weight: 600;
+}
+
+#card-close {
+    background: transparent;
+    color: var(--text-tertiary);
+    padding: 4px 8px;
+    font-size: 16px;
+}
+
+#card-close:hover {
+    color: var(--text);
+    background: var(--bg-tertiary);
+}
+
+.card-content {
+    padding: 8px 16px;
+}
+
+.card-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--bg-tertiary);
+    font-size: 13px;
+}
+
+.card-row:last-child {
+    border-bottom: none;
+}
+
+.card-label {
+    color: var(--text-secondary);
+}
+
+.card-row span:last-child:not(.card-label) {
+    font-weight: 500;
+    color: var(--text);
+    text-align: right;
+}
+
+.card-toggle {
+    display: flex;
+    gap: 4px;
+}
+
+.toggle-btn {
+    padding: 4px 10px;
+    font-size: 12px;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+}
+
+.toggle-btn:hover {
+    background: var(--border);
+}
+
+.toggle-btn.active {
+    background: var(--accent);
+    color: white;
+}
+
+.card-actions {
+    padding: 12px 16px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.card-actions button {
+    width: 100%;
+    padding: 10px 14px;
+    font-size: 13px;
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+}
+
+.card-actions button:hover {
+    background: var(--bg-tertiary);
+}
+
+.card-actions button.active {
+    background: var(--accent-light);
+    color: var(--accent);
+    border-color: var(--accent);
+}
+
+/* ============================================
+   Height Editor
+   ============================================ */
+
+.height-label {
+    position: absolute;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 8px 12px;
+    box-shadow: var(--shadow);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    z-index: 100;
+    pointer-events: auto;
+}
+
+.height-label input {
+    width: 60px;
+    padding: 6px 8px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    font-size: 13px;
+    text-align: center;
+    font-family: var(--font);
+}
+
+.height-label input:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.height-btn {
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    background: var(--bg-tertiary);
+    color: var(--text);
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.height-btn:hover {
+    background: var(--border);
+}
+
+/* ============================================
+   Insolation Results Panel
+   ============================================ */
+
+#insolation-results {
+    position: absolute;
+    top: 16px;
+    left: 232px;
+    width: 320px;
+    max-height: calc(100vh - 32px);
+    background: var(--bg);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-lg);
+    display: flex;
+    flex-direction: column;
+    opacity: 0;
+    transform: translateX(-10px);
+    transition: all 0.2s ease;
+    pointer-events: none;
+    z-index: 150;
+}
+
+#insolation-results.visible {
+    opacity: 1;
+    transform: translateX(0);
+    pointer-events: auto;
+}
+
+#insolation-results .panel-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 16px;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
+    border-radius: var(--radius) var(--radius) 0 0;
+}
+
+#insolation-results .panel-header span {
+    font-size: 14px;
+    font-weight: 600;
+}
+
+#insolation-results .panel-header button {
+    background: transparent;
+    color: var(--text-tertiary);
+    padding: 4px 8px;
+    font-size: 16px;
+}
+
+#insolation-results .panel-header button:hover {
+    color: var(--text);
+    background: var(--bg-tertiary);
+}
+
+#insolation-results .panel-content {
+    padding: 16px;
+    overflow-y: auto;
+    flex: 1;
+}
+
+.result-stats {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 16px;
+}
+
+.result-stats .stat {
+    flex: 1;
+    text-align: center;
+    padding: 12px 8px;
+    border-radius: var(--radius-sm);
+    background: var(--bg-secondary);
+}
+
+.result-stats .stat span {
+    display: block;
+    font-size: 24px;
+    font-weight: 600;
+    margin-bottom: 2px;
+}
+
+.result-stats .stat small {
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+
+.result-stats .stat.pass {
+    background: #e6f4ea;
+    color: var(--success);
+}
+
+.result-stats .stat.pass small {
+    color: var(--success);
+}
+
+.result-stats .stat.warning {
+    background: #fef7e0;
+    color: #b06000;
+}
+
+.result-stats .stat.warning small {
+    color: #b06000;
+}
+
+.result-stats .stat.fail {
+    background: #fce8e6;
+    color: var(--error);
+}
+
+.result-stats .stat.fail small {
+    color: var(--error);
+}
+
+.result-controls {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 16px;
+}
+
+.result-controls button {
+    flex: 1;
+    padding: 8px 12px;
+    font-size: 12px;
+    background: var(--bg);
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+}
+
+.result-controls button:hover {
+    background: var(--bg-tertiary);
+    color: var(--text);
+}
+
+.result-controls button.active {
+    background: var(--accent);
+    color: white;
+    border-color: var(--accent);
+}
+
+.results-list-header {
+    font-size: 12px;
+    color: var(--text-tertiary);
+    margin-bottom: 12px;
+}
+
+#insolation-details {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 300px;
+    overflow-y: auto;
+}
+
+.detail-item {
+    padding: 10px 12px;
+    border-radius: var(--radius-sm);
+    border-left: 3px solid var(--border);
+    cursor: pointer;
+    transition: all 0.15s ease;
+    background: var(--bg-secondary);
+}
+
+.detail-item:hover {
+    background: var(--bg-tertiary);
+}
+
+.detail-item.selected {
+    border-left-color: var(--accent);
+    background: var(--accent-light);
+}
+
+.detail-item.pass {
+    border-left-color: var(--success);
+}
+
+.detail-item.warning {
+    border-left-color: var(--warning);
+}
+
+.detail-item.fail {
+    border-left-color: var(--error);
+}
+
+.detail-item .title {
+    font-weight: 500;
+    font-size: 13px;
+    margin-bottom: 2px;
+}
+
+.detail-item .location {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    margin-bottom: 4px;
+}
+
+.detail-item .message {
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.detail-item .time {
+    font-size: 13px;
+    font-weight: 600;
+    margin-top: 6px;
+    color: var(--text);
+}
+
+/* ============================================
+   Draw Tool
+   ============================================ */
+
+.draw-hint {
+    position: absolute;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--bg);
+    padding: 10px 16px;
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-lg);
+    font-size: 13px;
+    color: var(--text-secondary);
+    z-index: 100;
+}
+
+/* ============================================
+   Scrollbar
+   ============================================ */
+
+::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: var(--text-tertiary);
+}
+
+/* ============================================
+   Panel Overlay (disabled)
+   ============================================ */
+
+.panel-overlay {
+    display: none;
+}
+
+/* ============================================
+   Responsive
+   ============================================ */
+
+@media (max-width: 768px) {
+    #info-panel,
+    #scene-panel {
+        width: calc(100vw - 32px);
+        left: 16px;
+        right: 16px;
+    }
+    
+    #building-card {
+        width: calc(100vw - 32px);
+        left: 16px;
+        right: 16px;
+        top: auto;
+        bottom: 16px;
+    }
+    
+    #insolation-results {
+        width: calc(100vw - 32px);
+        left: 16px;
+        top: auto;
+        bottom: 16px;
+        max-height: 50vh;
+    }
+    
+    .editor-toolbar {
+        width: calc(100vw - 32px);
+        left: 16px;
+        transform: none;
+    }
+}
+
+
+/* ============================================
+   Area Selector Rectangle
+   ============================================ */
+
+.selection-rect {
+    position: absolute;
+    border: 2px solid var(--accent);
+    background: rgba(26, 115, 232, 0.15);
+    pointer-events: none;
+    z-index: 5;
+    box-sizing: border-box;
+}
+
+.selection-rect.hidden {
+    display: none;
+}
+
+/* Resize handles (если понадобятся) */
+.selection-rect::before {
+    content: '';
+    position: absolute;
+    top: -4px;
+    left: -4px;
+    right: -4px;
+    bottom: -4px;
+    border: 1px dashed var(--accent);
+    opacity: 0.5;
+    pointer-events: none;
+}
+
+/* ============================================
+   Координаты центра сцены
+   ============================================ */
+
+.coords-display {
+    position: fixed;
+    bottom: 12px;
+    left: 12px;
+    background: rgba(255, 255, 255, 0.9);
+    padding: 6px 10px;
+    border-radius: var(--radius-sm);
+    font-size: 12px;
+    font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
+    color: var(--text-secondary);
+    box-shadow: var(--shadow-sm);
+    z-index: 100;
+    pointer-events: none;
+    backdrop-filter: blur(4px);
+}
+
+

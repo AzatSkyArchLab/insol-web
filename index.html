@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Insol Web — Расчёт инсоляции</title>
+    
+    <link rel="stylesheet" href="css/main.css">
+    <link href="https://unpkg.com/maplibre-gl@4.5.0/dist/maplibre-gl.css" rel="stylesheet" />
+    <script src="https://unpkg.com/maplibre-gl@4.5.0/dist/maplibre-gl.js"></script>
+    
+    <script src="https://cdn.jsdelivr.net/npm/earcut@2.2.4/dist/earcut.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/osmtogeojson@3.0.0-beta.5/osmtogeojson.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <!-- JSZip для экспорта OBJ в архив -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <!-- DXF Parser для подложек -->
+    <script src="https://cdn.jsdelivr.net/npm/dxf-parser@1.1.2/dist/dxf-parser.min.js"></script>
+</head>
+
+<body>
+    <!-- Режим 1: Карта -->
+    <div id="map-mode">
+        <div id="map"></div>
+        
+        <div id="info-panel">
+            <h3>Insol Web</h3>
+            <p>Выберите область для анализа</p>
+            <button id="select-mode-btn">Выбрать область</button>
+            <div id="selection-info"></div>
+            <button id="load-btn" disabled>Загрузить область</button>
+        </div>
+    </div>
+    
+    <!-- Режим 2: 3D-сцена -->
+    <div id="scene-mode" class="hidden">
+        <div id="scene-container"></div>
+        
+        <div id="scene-panel">
+            <h3>3D Модель</h3>
+            <p>Зданий: <span id="building-count">0</span></p>
+            
+            <div class="legend">
+                <div class="legend-item">
+                    <span class="legend-color residential"></span>
+                    Жилые
+                </div>
+                <div class="legend-item">
+                    <span class="legend-color other"></span>
+                    Прочие
+                </div>
+            </div>
+            
+            <button id="back-btn">Назад к карте</button>
+            <button id="underlay-btn" onclick="showUnderlayPanel()" style="margin-top: 8px;">DXF Подложки</button>
+        </div>
+        
+        <!-- Карточка здания -->
+        <div id="building-card" class="hidden">
+            <div class="card-header">
+                <span id="card-title">Здание</span>
+                <button id="card-close">✕</button>
+            </div>
+
+            <div class="card-content">
+                <div class="card-row">
+                    <span class="card-label">Тип:</span>
+                    <div class="card-toggle">
+                        <button class="toggle-btn active" data-residential="true">Жилое</button>
+                        <button class="toggle-btn" data-residential="false">Нежилое</button>
+                    </div>
+                </div>
+                <div class="card-row">
+                    <span class="card-label">Функция:</span>
+                    <span id="card-function">—</span>
+                </div>
+                <div class="card-row">
+                    <span class="card-label">Этажей:</span>
+                    <span id="card-levels">—</span>
+                </div>
+                <div class="card-row">
+                    <span class="card-label">Высота:</span>
+                    <span id="card-height">—</span>
+                </div>
+                <div class="card-row">
+                    <span class="card-label">Источник:</span>
+                    <span id="card-height-source">—</span>
+                </div>
+                <div class="card-row">
+                    <span class="card-label">Адрес:</span>
+                    <span id="card-address">—</span>
+                </div>
+                <div class="card-row">
+                    <span class="card-label">OSM ID:</span>
+                    <span id="card-osm-id">—</span>
+                </div>
+            </div>
+            
+            <div class="card-actions">
+                <button id="edit-height-btn">Изменить высоту</button>
+                <button id="insolation-grid-btn">Инсоляционная сетка</button>
+                <button id="select-all-points-btn" class="hidden">Выбрать все точки</button>
+                <button id="calculate-insolation-btn" class="hidden">Рассчитать инсоляцию</button>
+            </div>
+        </div>
+        <!-- Конец карточки здания -->
+        
+
+        <!-- Панель результатов инсоляции (выдвижная) -->
+        <div id="insolation-results" class="hidden">
+            <div class="panel-header">
+                <span>Результаты инсоляции</span>
+                <button id="insolation-results-close" title="Закрыть">✕</button>
+            </div>
+            <div class="panel-content">
+                <div class="result-stats">
+                    <div class="stat pass">
+                        <span id="stat-pass">0</span>
+                        <small>Норма</small>
+                    </div>
+                    <div class="stat warning">
+                        <span id="stat-warning">0</span>
+                        <small>Квартир.</small>
+                    </div>
+                    <div class="stat fail">
+                        <span id="stat-fail">0</span>
+                        <small>Не соотв.</small>
+                    </div>
+                </div>
+                
+                <div class="result-controls">
+                    <button id="toggle-rays-btn">Лучи точки</button>
+                    <button id="toggle-all-rays-btn">Все лучи</button>
+                </div>
+                
+                <div class="results-list-header">
+                    Выберите точку для просмотра лучей:
+                </div>
+                
+                <div id="insolation-details"></div>
+            </div>
+        </div>
+        <!-- Конец панели результатов -->
+        
+    </div>
+    <!-- Конец scene-mode -->
+    
+    <script type="module" src="js/main.js"></script>
+</body>
+</html>
