@@ -305,7 +305,12 @@ class InsolationController {
                 });
                 div.classList.add('selected');
                 state.selectedResultIndex = index;
-                state.insolationCalculator.showRays(r.point, r.collision);
+                
+                // Используем актуальные данные из state, а не замыкание на старые результаты
+                const currentResult = state.lastCalculationResults[index];
+                if (currentResult) {
+                    state.insolationCalculator.showRays(currentResult.point, currentResult.collision);
+                }
                 
                 if (toggleBtn) {
                     toggleBtn.classList.add('active');

@@ -315,6 +315,13 @@ class MoveTool {
     _startMoveUnderlay(underlay) {
         this.selectedUnderlay = underlay;
         this.isMoving = true;
+
+        // Скрываем лучи инсоляции при начале перемещения (чтобы избежать артефактов)
+        const calculator = window.app?.state?.insolationCalculator;
+        if (calculator) {
+            calculator.hideRays();
+            calculator.hideAllRays();
+        }
         
         // Запоминаем начальную позицию подложки
         this.underlayStartPos.x = underlay.position.x;

@@ -22,6 +22,7 @@ class WindCFD {
         this.domainVisible = true;
         this.windOverlay = null;
         this.isCalculating = false;
+        this.pollingStopped = false;
         this.currentConfig = null;
         
         // v2.1: Стрелка направления ветра
@@ -34,7 +35,7 @@ class WindCFD {
         this.vectorField = null;
         this.vectorArrows = [];
         this.displayMode = 'gradient'; // 'gradient' | 'vectors' | 'both'
-        this.vectorDensity = 15;
+        this.vectorDensity = 35;
         this.vectorScale = 3;
         
         // Пакетный расчёт
@@ -176,6 +177,7 @@ class WindCFD {
             <div class="wcfd-section" id="wcfd-calc-section">
                 <button class="wcfd-btn wcfd-btn-primary" id="wcfd-calculate" disabled>Запустить расчёт</button>
                 <button class="wcfd-btn wcfd-btn-success" id="wcfd-calculate-all" disabled>🔄 Рассчитать все направления</button>
+                <button class="wcfd-btn" id="wcfd-clear-server" style="margin-top: 10px; font-size: 12px;">🗑️ Очистить кеш сервера</button>
                 <div class="wcfd-progress hidden" id="wcfd-progress">
                     <div class="wcfd-spinner"></div>
                     <span id="wcfd-progress-text">Расчёт...</span>
@@ -562,6 +564,7 @@ class WindCFD {
         document.getElementById('wcfd-show-domain').onchange = (e) => this.toggleDomain(e.target.checked);
         document.getElementById('wcfd-calculate').onclick = () => this.startCalculation();
         document.getElementById('wcfd-calculate-all').onclick = () => this.calculateAllDirections();
+        document.getElementById('wcfd-clear-server').onclick = () => this.clearServerCache();
         document.getElementById('wcfd-hide-results').onclick = () => this.hideCurrentOverlay();
         document.getElementById('wcfd-export-results').onclick = () => this.exportResults();
         document.getElementById('wcfd-download-paraview').onclick = () => this.downloadParaview();
@@ -822,7 +825,15 @@ class WindCFD {
         
         if (this.windArrow) {
             this.sceneManager.scene.remove(this.windArrow);
-            this.windArrow.dispose();
+            // ArrowHelper не имеет dispose, очищаем вручную
+            if (this.windArrow.line) {
+                this.windArrow.line.geometry.dispose();
+                this.windArrow.line.material.dispose();
+            }
+            if (this.windArrow.cone) {
+                this.windArrow.cone.geometry.dispose();
+                this.windArrow.cone.material.dispose();
+            }
             this.windArrow = null;
         }
         const label = document.getElementById('wcfd-wind-arrow-label');
@@ -978,8 +989,8 @@ class WindCFD {
         const result = this.results[sector.angle];
         
         if (result) {
-            // Если данные ещё не загружены (cached флаг) - загружаем
-            if (result.cached && !result.data) {
+            // Если данные ещё не загружены - загружаем с сервера
+            if (!result.data) {
                 console.log(`[WindCFD] Загрузка данных для ${sector.angle}°...`);
                 const data = await this.loadDirectionData(sector.angle);
                 if (data) {
@@ -995,6 +1006,8 @@ class WindCFD {
             // Показываем результат
             if (this.results[sector.angle]?.data) {
                 this.showDirectionResult(sector.angle);
+            } else {
+                console.warn(`[WindCFD] Нет данных для ${sector.angle}°`);
             }
         }
     }
@@ -1159,6 +1172,7 @@ class WindCFD {
             };
             
             this.isCalculating = true;
+            this.pollingStopped = false;
             
             const response = await fetch(`${this.serverUrl}/calculate`, {
                 method: 'POST',
@@ -1270,6 +1284,7 @@ class WindCFD {
     async startCalculation() {
         if (this.isCalculating) return;
         this.isCalculating = true;
+            this.pollingStopped = false;
         
         const progress = document.getElementById('wcfd-progress');
         const progressText = document.getElementById('wcfd-progress-text');
@@ -1353,6 +1368,12 @@ class WindCFD {
     }
     
     async pollStatus() {
+        // Проверяем флаг остановки
+        if (this.pollingStopped) {
+            console.log('[WindCFD] Polling остановлен');
+            return;
+        }
+        
         try {
             const resp = await fetch(`${this.serverUrl}/status`);
             const status = await resp.json();
@@ -1383,6 +1404,7 @@ class WindCFD {
                     // Сохраняем результат для направления
                     this.saveDirectionResult(this.selectedDirection, result);
                     
+                    this.pollingStopped = true;
                     this.isCalculating = false;
                     const progressEl = document.getElementById('wcfd-progress');
                     if (progressEl) progressEl.classList.add('hidden');
@@ -1400,6 +1422,7 @@ class WindCFD {
             } else if (status.status === 'error') {
                 if (progressBar) progressBar.style.background = '#f44336';
                 if (progressText) progressText.textContent = 'Ошибка: ' + status.message;
+                this.pollingStopped = true;
                 this.isCalculating = false;
             }
         } catch (e) {
@@ -1455,6 +1478,8 @@ class WindCFD {
     
     saveDirectionResult(angle, data) {
         console.log(`[WindCFD] Сохраняем результат для направления ${angle}°`);
+        console.log(`[WindCFD] data.case_dir:`, data.case_dir);
+        console.log(`[WindCFD] data.case_name:`, data.case_name);
         
         // Скрываем текущий overlay
         this.hideCurrentOverlay();
@@ -1479,19 +1504,28 @@ class WindCFD {
     
     showDirectionResult(angle) {
         console.log(`[WindCFD] Показываем результат для направления ${angle}°`);
+        console.log(`[WindCFD] Текущий activeDirection: ${this.activeDirection}`);
+        console.log(`[WindCFD] results keys:`, Object.keys(this.results));
         
         // Скрываем текущий overlay
         this.hideCurrentOverlay();
         
         const result = this.results[angle];
+        console.log(`[WindCFD] result для ${angle}:`, result ? 'есть' : 'нет', result?.data ? 'data есть' : 'data нет');
         if (!result || !result.data) {
             console.warn(`[WindCFD] Нет результата для направления ${angle}°`);
             return;
         }
         
+        this.selectedDirection = angle;
+        this.selectedSpeed = result.data.wind_speed || result.speed || 4.0;
+        
         this.activeDirection = angle;
         this.renderWindOverlay(result.data);
         this.updateResultsSection();
+        
+        // Обновляем стрелку направления
+        this.updateWindArrow();
     }
     
     hideCurrentOverlay() {
@@ -1545,7 +1579,7 @@ class WindCFD {
                     <span>Плотность:</span>
                     <span class="wcfd-slice-value" id="wcfd-density-value">${this.vectorDensity}</span>
                 </div>
-                <input type="range" id="wcfd-density-slider" min="5" max="30" step="1" value="${this.vectorDensity}">
+                <input type="range" id="wcfd-density-slider" min="5" max="100" step="1" value="${this.vectorDensity}">
                 <div class="wcfd-slice-header">
                     <span>Масштаб:</span>
                     <span class="wcfd-slice-value" id="wcfd-scale-value">${this.vectorScale}x</span>
@@ -1657,24 +1691,24 @@ class WindCFD {
         console.log(`[WindCFD] Отрисовка: ${nx}x${ny}, spacing=${spacing}, origin=[${origin}]`);
         
         // Определяем диапазон скоростей из данных
+        // Используем min=0 для максимальной контрастности цветов
         if (data.stats) {
-            this.speedRange = { min: data.stats.min_speed, max: data.stats.max_speed };
+            this.speedRange = { min: 0, max: data.stats.max_speed };
         } else {
             // Fallback: вычисляем из grid
-            let min = Infinity, max = -Infinity;
+            let max = -Infinity;
             for (let iy = 0; iy < ny; iy++) {
                 for (let ix = 0; ix < nx; ix++) {
                     const v = grid.values[iy][ix];
                     if (v > 0.01) {
-                        min = Math.min(min, v);
                         max = Math.max(max, v);
                     }
                 }
             }
-            this.speedRange = { min: min === Infinity ? 0 : min, max: max === -Infinity ? 5 : max };
+            this.speedRange = { min: 0, max: max === -Infinity ? 5 : max };
         }
         
-        console.log(`[WindCFD] Speed range: ${this.speedRange.min.toFixed(2)} - ${this.speedRange.max.toFixed(2)} m/s`);
+        console.log(`[WindCFD] Speed range: 0 - ${this.speedRange.max.toFixed(2)} m/s`);
         
         // v2.1: Рендерим в зависимости от режима
         if (this.displayMode === 'gradient' || this.displayMode === 'both') {
@@ -1803,6 +1837,7 @@ class WindCFD {
         }
         
         this.sceneManager.scene.add(this.vectorField);
+        this.vectorField.position.set(0, 0, 0); // Сброс позиции после добавления
         console.log(`[WindCFD] Создано ${this.vectorArrows.length} векторов`);
     }
     
@@ -1944,7 +1979,7 @@ class WindCFD {
     // ==================== Paraview ====================
     
     async downloadParaview() {
-        const direction = this.activeDirection;
+        const direction = this.activeDirection ?? this.selectedDirection;
         if (direction === null) {
             alert('Сначала выберите направление для просмотра');
             return;
@@ -2247,6 +2282,30 @@ class WindCFD {
     
     // ==================== Очистка ====================
     
+    async clearServerCache() {
+        if (!confirm('Удалить все расчёты CFD на сервере? Это удалит все case_ директории.')) return;
+        
+        try {
+            const resp = await fetch(`${this.serverUrl}/cleanup`, { method: 'POST' });
+            const data = await resp.json();
+            console.log('[WindCFD] Сервер очищен:', data);
+            
+            // Очищаем локальный кеш
+            this.results = {};
+            this.hideCurrentOverlay();
+            this.renderWindRose();
+            this.updateCalculateButtons();
+            
+            const resultsSection = document.getElementById('wcfd-results-section');
+            if (resultsSection) resultsSection.classList.add('wcfd-hidden');
+            
+            alert(`Удалено ${data.deleted || 0} расчётов`);
+        } catch (e) {
+            console.error('[WindCFD] Ошибка очистки:', e);
+            alert('Ошибка подключения к серверу');
+        }
+    }
+
     async clearAllResults() {
         if (!confirm('Удалить все результаты на сервере и локально?')) return;
         
