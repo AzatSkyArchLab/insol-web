@@ -13,11 +13,15 @@ class WindCFD {
         this.sceneManager = sceneManager;
         this.coords = coords;
         
+        // Session ID для multi-user
+        this.sessionId = this._getOrCreateSessionId();
+        
         // Состояние
         this.selectedBuildings = [];
         this.epwData = null;
         this.selectedDirection = null;
         this.selectedSpeed = null;
+        this.speedType = 'mean'; // 'mean' | 'p95' | 'p99' | 'max' | 'custom'
         this.domainMesh = null;
         this.domainVisible = true;
         this.windOverlay = null;
@@ -35,7 +39,7 @@ class WindCFD {
         this.vectorField = null;
         this.vectorArrows = [];
         this.displayMode = 'gradient'; // 'gradient' | 'vectors' | 'both'
-        this.vectorDensity = 35;
+        this.vectorDensity = 60;
         this.vectorScale = 3;
         
         // Пакетный расчёт
@@ -49,13 +53,29 @@ class WindCFD {
         this.results = {};
         this.activeDirection = null; // Текущее отображаемое направление
         
-        // Настройки домена (по рекомендациям COST 732 / AIJ Guidelines)
+        // Настройки CFD (COST 732 / AIJ Guidelines)
         this.domainSettings = {
-            marginFactor: 10,    // 10H отступ со всех сторон (компромисс между 5H и 15H)
-            heightFactor: 6,     // 6H высота домена
-            cellSize: 5,
-            iterations: 500
+            // Домен
+            inletFactor: 3,      // 3H до inlet
+            outletFactor: 6,     // 6H до outlet
+            lateralFactor: 2.5,  // 2.5H по бокам
+            heightFactor: 5,     // 5H высота домена
+            // Сетка
+            cellSize: 5,         // Размер базовой ячейки (м)
+            refinementMin: 1,    // Мин. уровень рафинирования у зданий
+            refinementMax: 2,    // Макс. уровень рафинирования
+            maxCells: 3,         // Макс. ячеек (миллионы)
+            // Расчёт
+            iterations: 400      // Количество итераций
         };
+        
+        // Модель турбулентности
+        this.turbulenceModel = 'k-epsilon'; // k-ε (RANS)
+        
+        // Настройки визуализации векторов
+        
+        // Аниматор потоков (инициализируется позже)
+        this.flowAnimator = null;
         
         // Цветовая шкала для абсолютных скоростей (м/с) - как в Paraview
         this.colorScale = [
@@ -85,14 +105,36 @@ class WindCFD {
         // Загружаем существующие результаты с сервера
         this.loadCachedDirections();
         
-        console.log('[WindCFD] Инициализирован v2.1');
+        console.log('[WindCFD] Инициализирован v2.3 (multi-user), session:', this.sessionId.substring(0, 8));
+    }
+    
+    // ==================== Session Management ====================
+    
+    _getOrCreateSessionId() {
+        let sessionId = localStorage.getItem('cfd_session_id');
+        if (!sessionId) {
+            sessionId = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+                const r = Math.random() * 16 | 0;
+                return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+            });
+            localStorage.setItem('cfd_session_id', sessionId);
+        }
+        return sessionId;
+    }
+    
+    async _fetch(url, options = {}) {
+        const headers = {
+            'X-Session-ID': this.sessionId,
+            ...(options.headers || {})
+        };
+        return fetch(url, { ...options, headers });
     }
     
     // ==================== Загрузка кеша с сервера ====================
     
     async loadCachedDirections() {
         try {
-            const resp = await fetch(`${this.serverUrl}/directions`);
+            const resp = await this._fetch(`${this.serverUrl}/directions`);
             if (!resp.ok) return;
             
             const data = await resp.json();
@@ -121,7 +163,7 @@ class WindCFD {
     
     async loadDirectionData(angle) {
         try {
-            const resp = await fetch(`${this.serverUrl}/result/${angle}`);
+            const resp = await this._fetch(`${this.serverUrl}/result/${angle}`);
             if (!resp.ok) return null;
             
             const data = await resp.json();
@@ -174,6 +216,111 @@ class WindCFD {
                 <div class="wcfd-selected-wind" id="wcfd-selected-wind">—</div>
             </div>
             
+            <!-- Настройки CFD (сворачиваемые) -->
+            <div class="wcfd-section" id="wcfd-cfd-settings-section">
+                <div class="wcfd-label wcfd-collapsible" id="wcfd-settings-toggle" style="cursor: pointer;">
+                    ⚙️ Настройки CFD <span style="float: right; font-size: 10px;">▼</span>
+                </div>
+                <div id="wcfd-settings-content" style="display: none; margin-top: 10px;">
+                    <div style="background: #e8f4e8; padding: 8px; border-radius: 4px; margin-bottom: 10px; font-size: 12px;">
+                        <strong>Модель:</strong> k-ε (RANS)<br>
+                        <strong>Стандарт:</strong> COST 732 / AIJ
+                    </div>
+                    
+                    <div class="wcfd-setting-group">
+                        <label>Домен (×H) <span class="wcfd-help" title="H = высота самого высокого здания. Размеры домена влияют на точность и время расчёта.">?</span></label>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 5px; margin-top: 5px;">
+                            <div>
+                                <span style="font-size: 11px;" title="Расстояние от зданий до входной границы (откуда дует ветер). Рекомендуется 3-5H.">Inlet:</span>
+                                <input type="number" id="wcfd-inlet-factor" value="3" min="2" max="5" step="0.5" style="width: 100%;">
+                            </div>
+                            <div>
+                                <span style="font-size: 11px;" title="Расстояние до выходной границы (за зданиями). Важно для wake-зоны. Рекомендуется 6-15H.">Outlet:</span>
+                                <input type="number" id="wcfd-outlet-factor" value="6" min="5" max="15" step="1" style="width: 100%;">
+                            </div>
+                            <div>
+                                <span style="font-size: 11px;" title="Расстояние по бокам от зданий. Рекомендуется 2-5H.">Lateral:</span>
+                                <input type="number" id="wcfd-lateral-factor" value="2.5" min="2" max="5" step="0.5" style="width: 100%;">
+                            </div>
+                            <div>
+                                <span style="font-size: 11px;" title="Высота расчётного домена. Рекомендуется 5-6H для корректного ABL профиля.">Height:</span>
+                                <input type="number" id="wcfd-height-factor" value="5" min="4" max="8" step="1" style="width: 100%;">
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="wcfd-setting-group" style="margin-top: 10px;">
+                        <label>Сетка <span class="wcfd-help" title="Параметры расчётной сетки. Мельче сетка = точнее, но дольше.">?</span></label>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 5px; margin-top: 5px;">
+                            <div>
+                                <span style="font-size: 11px;" title="Размер базовой ячейки blockMesh. Меньше = больше ячеек, точнее результат.">Ячейка (м):</span>
+                                <input type="number" id="wcfd-cell-size" value="5" min="2" max="10" step="1" style="width: 100%;">
+                            </div>
+                            <div>
+                                <span style="font-size: 11px;" title="Максимальное количество ячеек (миллионы). Ограничивает память и время.">Макс. ячеек (M):</span>
+                                <input type="number" id="wcfd-max-cells" value="3" min="1" max="10" step="1" style="width: 100%;">
+                            </div>
+                            <div>
+                                <span style="font-size: 11px;" title="Минимальный уровень измельчения сетки у зданий. 0=без измельчения.">Refine min:</span>
+                                <input type="number" id="wcfd-refine-min" value="1" min="0" max="3" step="1" style="width: 100%;">
+                            </div>
+                            <div>
+                                <span style="font-size: 11px;" title="Максимальный уровень измельчения. Каждый уровень делит ячейку на 8.">Refine max:</span>
+                                <input type="number" id="wcfd-refine-max" value="2" min="1" max="4" step="1" style="width: 100%;">
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="wcfd-setting-group" style="margin-top: 10px;">
+                        <label>Расчёт <span class="wcfd-help" title="Параметры солвера simpleFoam.">?</span></label>
+                        <div style="margin-top: 5px;">
+                            <span style="font-size: 11px;" title="Количество итераций SIMPLE. Обычно сходится за 200-500. Больше = стабильнее.">Итерации:</span>
+                            <input type="number" id="wcfd-iterations" value="400" min="100" max="1000" step="50" style="width: 100%;">
+                        </div>
+                    </div>
+                    
+                    <button class="wcfd-btn" id="wcfd-apply-settings" style="margin-top: 10px; width: 100%;">
+                        ✓ Применить настройки
+                    </button>
+                </div>
+            </div>
+            
+            <!-- Настройки визуализации векторов -->
+            <div class="wcfd-section wcfd-hidden" id="wcfd-vector-settings-section">
+                <div class="wcfd-label wcfd-collapsible" id="wcfd-vector-toggle" style="cursor: pointer;">
+                    🌊 Анимация потоков <span style="float: right; font-size: 10px;">▼</span>
+                </div>
+                <div id="wcfd-vector-content" style="display: none; margin-top: 10px;">
+                    <div class="wcfd-setting-group">
+                        <label>Настройки анимации <span class="wcfd-help" title="Анимированные частицы, движущиеся по векторному полю скоростей.">?</span></label>
+                        <div style="margin-top: 8px;">
+                            <div style="display: flex; align-items: center; margin-bottom: 8px;">
+                                <span style="font-size: 11px; width: 80px;" title="Количество частиц в анимации.">Частицы:</span>
+                                <input type="range" id="wcfd-flow-particles" min="100" max="2000" step="100" value="500" style="flex: 1;">
+                                <span id="wcfd-flow-particles-val" style="width: 40px; text-align: right; font-size: 11px;">500</span>
+                            </div>
+                            <div style="display: flex; align-items: center; margin-bottom: 8px;">
+                                <span style="font-size: 11px; width: 80px;" title="Множитель скорости. 1x = реальная скорость ветра, 10x = в 10 раз быстрее.">Скорость:</span>
+                                <input type="range" id="wcfd-flow-speed" min="1" max="20" step="1" value="5" style="flex: 1;">
+                                <span id="wcfd-flow-speed-val" style="width: 40px; text-align: right; font-size: 11px;">5x</span>
+                            </div>
+                            <div style="display: flex; align-items: center; margin-bottom: 8px;">
+                                <span style="font-size: 11px; width: 80px;" title="Длина следа за каждой частицей.">Длина следа:</span>
+                                <input type="range" id="wcfd-flow-trail" min="10" max="150" step="10" value="30" style="flex: 1;">
+                                <span id="wcfd-flow-trail-val" style="width: 40px; text-align: right; font-size: 11px;">30</span>
+                            </div>
+                            <div style="display: flex; align-items: center;">
+                                <input type="checkbox" id="wcfd-flow-color-speed" checked style="margin-right: 8px;">
+                                <span style="font-size: 11px;">Цвет по скорости</span>
+                            </div>
+                        </div>
+                        <button class="wcfd-btn wcfd-btn-primary" id="wcfd-toggle-flow" style="margin-top: 10px; width: 100%;">
+                            ▶️ Запустить анимацию
+                        </button>
+                    </div>
+                </div>
+            </div>
+            
             <div class="wcfd-section" id="wcfd-calc-section">
                 <button class="wcfd-btn wcfd-btn-primary" id="wcfd-calculate" disabled>Запустить расчёт</button>
                 <button class="wcfd-btn wcfd-btn-success" id="wcfd-calculate-all" disabled>🔄 Рассчитать все направления</button>
@@ -182,6 +329,17 @@ class WindCFD {
                     <div class="wcfd-spinner"></div>
                     <span id="wcfd-progress-text">Расчёт...</span>
                 </div>
+            </div>
+            
+            <!-- Фиксированная секция прогресса расчёта -->
+            <div class="wcfd-section wcfd-hidden" id="wcfd-calc-progress-section">
+                <div class="wcfd-label">⏳ Расчёт в процессе</div>
+                <div id="wcfd-calc-progress-info" style="font-size: 13px; margin-bottom: 8px;">—</div>
+                <div style="background: #e0e0e0; border-radius: 10px; height: 16px; overflow: hidden;">
+                    <div id="wcfd-calc-progress-bar" style="background: linear-gradient(90deg, #4CAF50, #8BC34A); height: 100%; width: 0%; transition: width 0.5s;"></div>
+                </div>
+                <div id="wcfd-calc-progress-iter" style="margin-top: 6px; color: #666; font-size: 12px;">—</div>
+                <button class="wcfd-btn wcfd-btn-danger" id="wcfd-calc-stop" style="margin-top: 8px;">⏹ Остановить</button>
             </div>
             
             <div class="wcfd-section wcfd-hidden" id="wcfd-results-section">
@@ -310,6 +468,111 @@ class WindCFD {
                 color: white;
             }
             .wcfd-btn-danger:hover { background: #c82333; color: white; }
+            
+            .wcfd-help {
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                width: 14px;
+                height: 14px;
+                background: #6c757d;
+                color: white;
+                border-radius: 50%;
+                font-size: 10px;
+                cursor: help;
+                margin-left: 4px;
+                position: relative;
+            }
+            .wcfd-help:hover {
+                background: #4a90e2;
+            }
+            
+            /* Кастомные tooltips */
+            .wcfd-help::after,
+            [data-tooltip]::after {
+                content: attr(title);
+                position: absolute;
+                bottom: 100%;
+                left: 50%;
+                transform: translateX(-50%);
+                background: #333;
+                color: white;
+                padding: 6px 10px;
+                border-radius: 4px;
+                font-size: 11px;
+                white-space: normal;
+                width: max-content;
+                max-width: 250px;
+                text-align: left;
+                z-index: 10000;
+                opacity: 0;
+                visibility: hidden;
+                transition: opacity 0.2s, visibility 0.2s;
+                pointer-events: none;
+                box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+                line-height: 1.4;
+                margin-bottom: 5px;
+            }
+            .wcfd-help:hover::after,
+            [data-tooltip]:hover::after {
+                opacity: 1;
+                visibility: visible;
+            }
+            /* Стрелочка */
+            .wcfd-help::before {
+                content: '';
+                position: absolute;
+                bottom: 100%;
+                left: 50%;
+                transform: translateX(-50%);
+                border: 5px solid transparent;
+                border-top-color: #333;
+                margin-bottom: -5px;
+                opacity: 0;
+                visibility: hidden;
+                transition: opacity 0.2s, visibility 0.2s;
+                z-index: 10001;
+            }
+            .wcfd-help:hover::before {
+                opacity: 1;
+                visibility: visible;
+            }
+            
+            /* Tooltips для span с title */
+            span[title] {
+                position: relative;
+            }
+            span[title]::after {
+                content: attr(title);
+                position: absolute;
+                bottom: 100%;
+                left: 0;
+                background: #333;
+                color: white;
+                padding: 6px 10px;
+                border-radius: 4px;
+                font-size: 11px;
+                white-space: normal;
+                width: max-content;
+                max-width: 220px;
+                text-align: left;
+                z-index: 10000;
+                opacity: 0;
+                visibility: hidden;
+                transition: opacity 0.2s, visibility 0.2s;
+                pointer-events: none;
+                box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+                line-height: 1.4;
+                margin-bottom: 5px;
+            }
+            span[title]:hover::after {
+                opacity: 1;
+                visibility: visible;
+            }
+            
+            [title] {
+                position: relative;
+            }
             
             .wcfd-checkbox {
                 display: flex;
@@ -565,14 +828,127 @@ class WindCFD {
         document.getElementById('wcfd-calculate').onclick = () => this.startCalculation();
         document.getElementById('wcfd-calculate-all').onclick = () => this.calculateAllDirections();
         document.getElementById('wcfd-clear-server').onclick = () => this.clearServerCache();
-        document.getElementById('wcfd-hide-results').onclick = () => this.hideCurrentOverlay();
-        document.getElementById('wcfd-export-results').onclick = () => this.exportResults();
-        document.getElementById('wcfd-download-paraview').onclick = () => this.downloadParaview();
-        document.getElementById('wcfd-clear-all').onclick = () => this.clearAllResults();
+        document.getElementById('wcfd-calc-stop').onclick = () => this.stopCalculation();
         
-        // Управление высотой сечения
-        document.getElementById('wcfd-slice-slider').oninput = (e) => this.onSliceHeightChange(e.target.value);
-        document.getElementById('wcfd-resample').onclick = () => this.resampleSlice();
+        // Настройки CFD
+        document.getElementById('wcfd-settings-toggle').onclick = () => this.toggleCFDSettings();
+        document.getElementById('wcfd-apply-settings').onclick = () => this.applyCFDSettings();
+        
+        // Настройки анимации потоков
+        document.getElementById('wcfd-vector-toggle').onclick = () => this.toggleVectorSettings();
+        
+        // Слайдеры анимации потоков
+        document.getElementById('wcfd-flow-particles').oninput = (e) => {
+            document.getElementById('wcfd-flow-particles-val').textContent = e.target.value;
+        };
+        document.getElementById('wcfd-flow-speed').oninput = (e) => {
+            document.getElementById('wcfd-flow-speed-val').textContent = e.target.value + 'x';
+        };
+        document.getElementById('wcfd-flow-trail').oninput = (e) => {
+            document.getElementById('wcfd-flow-trail-val').textContent = e.target.value;
+        };
+        document.getElementById('wcfd-toggle-flow').onclick = () => this.toggleFlowAnimation();
+        // Остальные элементы (slice-slider, resample, etc.) привязываются в updateResultsSection
+    }
+    
+    toggleCFDSettings() {
+        const content = document.getElementById('wcfd-settings-content');
+        const toggle = document.getElementById('wcfd-settings-toggle');
+        const isHidden = content.style.display === 'none';
+        content.style.display = isHidden ? 'block' : 'none';
+        toggle.innerHTML = `⚙️ Настройки CFD <span style="float: right; font-size: 10px;">${isHidden ? '▲' : '▼'}</span>`;
+    }
+    
+    toggleVectorSettings() {
+        const content = document.getElementById('wcfd-vector-content');
+        const toggle = document.getElementById('wcfd-vector-toggle');
+        const isHidden = content.style.display === 'none';
+        content.style.display = isHidden ? 'block' : 'none';
+        toggle.innerHTML = `🌊 Анимация потоков <span style="float: right; font-size: 10px;">${isHidden ? '▲' : '▼'}</span>`;
+    }
+    
+    toggleFlowAnimation() {
+        const btn = document.getElementById('wcfd-toggle-flow');
+        
+        // Проверяем наличие результата
+        if (this.activeDirection === null || !this.results[this.activeDirection]) {
+            alert('Сначала выполните расчёт и выберите направление для просмотра');
+            return;
+        }
+        
+        const data = this.results[this.activeDirection].data;
+        
+        // Инициализируем аниматор если ещё нет
+        if (!this.flowAnimator) {
+            if (typeof WindFlowAnimation === 'undefined') {
+                alert('Модуль WindFlowAnimation.js не загружен. Добавьте <script src="WindFlowAnimation.js"> в HTML.');
+                return;
+            }
+            this.flowAnimator = new WindFlowAnimation(this.sceneManager, this);
+        }
+        
+        // Toggle
+        if (this.flowAnimator.running) {
+            // Остановить
+            this.flowAnimator.stop();
+            btn.textContent = '▶️ Запустить анимацию';
+            btn.classList.remove('wcfd-btn-danger');
+            btn.classList.add('wcfd-btn-primary');
+        } else {
+            // Читаем настройки из UI
+            const settings = {
+                particleCount: parseInt(document.getElementById('wcfd-flow-particles').value) || 500,
+                speedMultiplier: parseFloat(document.getElementById('wcfd-flow-speed').value) || 5.0,
+                fadeLength: parseInt(document.getElementById('wcfd-flow-trail').value) || 30,
+                colorBySpeed: document.getElementById('wcfd-flow-color-speed').checked
+            };
+            
+            this.flowAnimator.updateSettings(settings);
+            this.flowAnimator.start(data);
+            
+            btn.textContent = '⏹️ Остановить анимацию';
+            btn.classList.remove('wcfd-btn-primary');
+            btn.classList.add('wcfd-btn-danger');
+        }
+    }
+    
+    // Остановка анимации при смене результата
+    stopFlowAnimationIfRunning() {
+        if (this.flowAnimator && this.flowAnimator.running) {
+            this.flowAnimator.stop();
+            const btn = document.getElementById('wcfd-toggle-flow');
+            if (btn) {
+                btn.textContent = '▶️ Запустить анимацию';
+                btn.classList.remove('wcfd-btn-danger');
+                btn.classList.add('wcfd-btn-primary');
+            }
+        }
+    }
+    
+    applyCFDSettings() {
+        // Читаем значения из UI
+        this.domainSettings.inletFactor = parseFloat(document.getElementById('wcfd-inlet-factor').value) || 3;
+        this.domainSettings.outletFactor = parseFloat(document.getElementById('wcfd-outlet-factor').value) || 6;
+        this.domainSettings.lateralFactor = parseFloat(document.getElementById('wcfd-lateral-factor').value) || 2.5;
+        this.domainSettings.heightFactor = parseFloat(document.getElementById('wcfd-height-factor').value) || 5;
+        this.domainSettings.cellSize = parseFloat(document.getElementById('wcfd-cell-size').value) || 5;
+        this.domainSettings.maxCells = parseFloat(document.getElementById('wcfd-max-cells').value) || 3;
+        this.domainSettings.refinementMin = parseInt(document.getElementById('wcfd-refine-min').value) || 1;
+        this.domainSettings.refinementMax = parseInt(document.getElementById('wcfd-refine-max').value) || 2;
+        this.domainSettings.iterations = parseInt(document.getElementById('wcfd-iterations').value) || 400;
+        
+        console.log('[WindCFD] Настройки CFD применены:', this.domainSettings);
+        
+        // Визуальное подтверждение
+        const btn = document.getElementById('wcfd-apply-settings');
+        btn.textContent = '✓ Применено!';
+        btn.style.background = '#4CAF50';
+        btn.style.color = 'white';
+        setTimeout(() => {
+            btn.textContent = '✓ Применить настройки';
+            btn.style.background = '';
+            btn.style.color = '';
+        }, 1500);
     }
     
     onSliceHeightChange(value) {
@@ -667,8 +1043,18 @@ class WindCFD {
         bbox.getCenter(bboxCenter);
         
         const maxHeight = size.z;
-        const margin = maxHeight * this.domainSettings.marginFactor;
-        const domainHeight = maxHeight * this.domainSettings.heightFactor;
+        const H = maxHeight;
+        
+        // Отступы как на сервере
+        const inlet = H * this.domainSettings.inletFactor;   // 3H
+        const outlet = H * this.domainSettings.outletFactor; // 6H  
+        const lateral = H * this.domainSettings.lateralFactor; // 2.5H
+        const domainHeight = H * this.domainSettings.heightFactor; // 5H
+        
+        // Визуализация: показываем средний размер
+        // По направлению ветра: inlet + outlet = 9H, по бокам: lateral*2 = 5H
+        // Берём максимум для симметричного отображения
+        const margin = Math.max(inlet + lateral, outlet + lateral) / 2;
         
         const domainWidth = size.x + margin * 2;
         const domainDepth = size.y + margin * 2;
@@ -679,18 +1065,14 @@ class WindCFD {
             depth: domainDepth,
             height: domainHeight,
             buildingsBbox: bbox.clone(),
-            // Границы для CFD генератора
-            xMin: bboxCenter.x - domainWidth / 2,
-            xMax: bboxCenter.x + domainWidth / 2,
-            yMin: bboxCenter.y - domainDepth / 2,
-            yMax: bboxCenter.y + domainDepth / 2
+            maxHeight: maxHeight
         };
         
         document.getElementById('wcfd-domain-info').innerHTML = `
             <strong>${domainWidth.toFixed(0)} × ${domainDepth.toFixed(0)} × ${domainHeight.toFixed(0)}</strong> м<br>
-            Центр: (${bboxCenter.x.toFixed(1)}, ${bboxCenter.y.toFixed(1)})<br>
+            H = ${maxHeight.toFixed(0)}м | Зданий: ${size.x.toFixed(0)} × ${size.y.toFixed(0)}м<br>
             <span style="font-size: 11px; color: #888;">
-                Отступ: ${this.domainSettings.marginFactor}H = ${margin.toFixed(0)}м
+                Сервер: inlet=${inlet.toFixed(0)}, outlet=${outlet.toFixed(0)}, lateral=${lateral.toFixed(0)}м
             </span>
         `;
         
@@ -890,6 +1272,13 @@ class WindCFD {
             return;
         }
         
+        // Рассчитываем статистику скоростей
+        const sortedSpeeds = [...data.speeds].sort((a, b) => a - b);
+        data.meanSpeed = sortedSpeeds.reduce((a, b) => a + b, 0) / sortedSpeeds.length;
+        data.maxSpeed = sortedSpeeds[sortedSpeeds.length - 1];
+        data.p95Speed = sortedSpeeds[Math.floor(sortedSpeeds.length * 0.95)];
+        data.p99Speed = sortedSpeeds[Math.floor(sortedSpeeds.length * 0.99)];
+        
         data.sectors = this.analyzeSectors(data, 8);
         this.epwData = data;
         
@@ -910,13 +1299,20 @@ class WindCFD {
         const names = ['С', 'СВ', 'В', 'ЮВ', 'Ю', 'ЮЗ', 'З', 'СЗ'];
         const angles = [0, 45, 90, 135, 180, 225, 270, 315];
         
-        return sectors.map((s, i) => ({
-            name: names[i],
-            angle: angles[i],
-            count: s.speeds.length,
-            frequency: (s.speeds.length / data.speeds.length) * 100,
-            meanSpeed: s.speeds.length > 0 ? s.speeds.reduce((a, b) => a + b, 0) / s.speeds.length : 0
-        }));
+        return sectors.map((s, i) => {
+            const sortedSpeeds = [...s.speeds].sort((a, b) => a - b);
+            const p95Index = Math.floor(sortedSpeeds.length * 0.95);
+            
+            return {
+                name: names[i],
+                angle: angles[i],
+                count: s.speeds.length,
+                frequency: (s.speeds.length / data.speeds.length) * 100,
+                meanSpeed: s.speeds.length > 0 ? s.speeds.reduce((a, b) => a + b, 0) / s.speeds.length : 0,
+                p95Speed: sortedSpeeds.length > 0 ? sortedSpeeds[p95Index] || sortedSpeeds[sortedSpeeds.length - 1] : 0,
+                maxSpeed: sortedSpeeds.length > 0 ? sortedSpeeds[sortedSpeeds.length - 1] : 0
+            };
+        });
     }
     
     updateEPWInfo() {
@@ -926,12 +1322,100 @@ class WindCFD {
             return;
         }
         
-        const avgSpeed = this.epwData.speeds.reduce((a, b) => a + b, 0) / this.epwData.speeds.length;
         info.innerHTML = `
             <strong>${this.epwData.location || this.epwData.filename}</strong><br>
             ${this.epwData.speeds.length} записей<br>
-            Средняя скорость: <strong>${avgSpeed.toFixed(1)} м/с</strong>
+            <div style="margin-top: 8px;">
+                <label>Скорость ветра:</label>
+                <select id="wcfd-speed-preset" style="width: 100%; margin-top: 4px; padding: 4px;">
+                    <option value="mean">Средняя (по секторам)</option>
+                    <option value="p95">Порывы 95% (по секторам)</option>
+                    <option value="p99">Экстремум 99% (глобальный): ${this.epwData.p99Speed.toFixed(1)} м/с</option>
+                    <option value="max">Максимум (по секторам)</option>
+                    <option value="custom">Вручную...</option>
+                </select>
+                <input type="number" id="wcfd-speed-custom" style="width: 100%; margin-top: 4px; padding: 4px; display: none;" 
+                       placeholder="Скорость м/с" min="0.1" max="50" step="0.1">
+            </div>
         `;
+        
+        // Устанавливаем начальную скорость
+        this.speedType = 'mean';
+        this.selectedSpeed = this.epwData.meanSpeed;
+        
+        // Обработчики
+        const select = document.getElementById('wcfd-speed-preset');
+        const customInput = document.getElementById('wcfd-speed-custom');
+        
+        select.onchange = () => {
+            const val = select.value;
+            this.speedType = val;
+            
+            if (val === 'custom') {
+                customInput.style.display = 'block';
+                customInput.value = this.selectedSpeed.toFixed(1);
+            } else {
+                customInput.style.display = 'none';
+                // Пересчитываем скорость для текущего направления
+                this.updateSpeedForCurrentDirection();
+            }
+            console.log(`[WindCFD] Speed type: ${this.speedType}, speed: ${this.selectedSpeed.toFixed(1)} m/s`);
+            this.updateWindArrow();
+            this.updateSelectedWindInfo();
+        };
+        
+        customInput.onchange = () => {
+            const val = parseFloat(customInput.value);
+            if (!isNaN(val) && val > 0) {
+                this.selectedSpeed = val;
+                this.speedType = 'custom';
+                console.log(`[WindCFD] Custom speed: ${this.selectedSpeed.toFixed(1)} m/s`);
+                this.updateWindArrow();
+                this.updateSelectedWindInfo();
+            }
+        };
+    }
+    
+    updateSelectedWindInfo() {
+        const info = document.getElementById('wcfd-selected-wind');
+        if (!info || this.selectedDirection === null) return;
+        
+        const sector = this.epwData?.sectors?.find(s => s.angle === this.selectedDirection);
+        if (sector) {
+            info.innerHTML = `
+                Направление: <strong>${sector.name} (${sector.angle}°)</strong><br>
+                Скорость: <strong>${this.selectedSpeed.toFixed(1)} м/с</strong>
+            `;
+        }
+    }
+    
+    updateSpeedForCurrentDirection() {
+        // Пересчитываем скорость на основе типа и текущего направления
+        if (!this.epwData) return;
+        
+        const sector = this.epwData.sectors?.find(s => s.angle === this.selectedDirection);
+        
+        switch (this.speedType) {
+            case 'mean':
+                // Средняя для текущего сектора
+                this.selectedSpeed = sector ? sector.meanSpeed : this.epwData.meanSpeed;
+                break;
+            case 'p95':
+                // 95 перцентиль для текущего сектора
+                this.selectedSpeed = sector?.p95Speed || this.epwData.p95Speed;
+                break;
+            case 'p99':
+                // Глобальный 99 перцентиль (редкие экстремумы)
+                this.selectedSpeed = this.epwData.p99Speed;
+                break;
+            case 'max':
+                // Максимум для текущего сектора
+                this.selectedSpeed = sector?.maxSpeed || this.epwData.maxSpeed;
+                break;
+            case 'custom':
+                // Не меняем - используем введённое значение
+                break;
+        }
     }
     
     renderWindRose() {
@@ -974,11 +1458,13 @@ class WindCFD {
         
         const sector = this.epwData.sectors[index];
         this.selectedDirection = sector.angle;
-        this.selectedSpeed = sector.meanSpeed;
+        
+        // Пересчитываем скорость для нового направления на основе типа
+        this.updateSpeedForCurrentDirection();
         
         document.getElementById('wcfd-selected-wind').innerHTML = `
             Направление: <strong>${sector.name} (${sector.angle}°)</strong><br>
-            Скорость: <strong>${sector.meanSpeed.toFixed(1)} м/с</strong>
+            Скорость: <strong>${this.selectedSpeed.toFixed(1)} м/с</strong>
         `;
         
         // v2.1: Обновляем стрелку направления
@@ -1146,7 +1632,9 @@ class WindCFD {
         
         const sector = this.batchQueue.shift();
         this.selectedDirection = sector.angle;
-        this.selectedSpeed = sector.meanSpeed;
+        
+        // Пересчитываем скорость для этого направления на основе типа
+        this.updateSpeedForCurrentDirection();
         
         // Обновляем UI
         document.querySelectorAll('.wcfd-wind-btn').forEach(btn => {
@@ -1163,18 +1651,27 @@ class WindCFD {
             const cfdConfig = {
                 buildings: geojson,
                 domain: this.domainParams,
-                wind: { direction: sector.angle, speed: sector.meanSpeed },
+                wind: { direction: sector.angle, speed: this.selectedSpeed },
                 settings: {
                     iterations: this.domainSettings.iterations,
                     cellSize: this.domainSettings.cellSize,
-                    sampleHeight: this.sliceHeight
+                    sampleHeight: this.sliceHeight,
+                    // Параметры домена
+                    inletFactor: this.domainSettings.inletFactor,
+                    outletFactor: this.domainSettings.outletFactor,
+                    lateralFactor: this.domainSettings.lateralFactor,
+                    heightFactor: this.domainSettings.heightFactor,
+                    // Параметры сетки
+                    refinementMin: this.domainSettings.refinementMin,
+                    refinementMax: this.domainSettings.refinementMax,
+                    maxCells: this.domainSettings.maxCells
                 }
             };
             
             this.isCalculating = true;
             this.pollingStopped = false;
             
-            const response = await fetch(`${this.serverUrl}/calculate`, {
+            const response = await this._fetch(`${this.serverUrl}/calculate`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(cfdConfig)
@@ -1201,7 +1698,7 @@ class WindCFD {
                 }
                 
                 try {
-                    const resp = await fetch(`${this.serverUrl}/status`);
+                    const resp = await this._fetch(`${this.serverUrl}/status`);
                     const status = await resp.json();
                     
                     this.updateBatchProgress(sector, status.message || 'Расчёт...');
@@ -1215,7 +1712,7 @@ class WindCFD {
                     }
                     
                     if (status.status === 'completed') {
-                        const resultResp = await fetch(`${this.serverUrl}/result`);
+                        const resultResp = await this._fetch(`${this.serverUrl}/result`);
                         const result = await resultResp.json();
                         
                         // Сохраняем с полными метаданными
@@ -1258,7 +1755,7 @@ class WindCFD {
         this.batchMode = false;
         this.batchQueue = [];
         this.isCalculating = false;
-        fetch(`${this.serverUrl}/stop`, { method: 'POST' }).catch(() => {});
+        this._fetch(`${this.serverUrl}/stop`, { method: 'POST' }).catch(() => {});
         this.updateResultsSection();
         this.updateCalculateButtons();
         console.log('[WindCFD] Пакетный расчёт остановлен');
@@ -1310,7 +1807,16 @@ class WindCFD {
                 settings: {
                     iterations: this.domainSettings.iterations,
                     cellSize: this.domainSettings.cellSize,
-                    sampleHeight: this.sliceHeight
+                    sampleHeight: this.sliceHeight,
+                    // Параметры домена
+                    inletFactor: this.domainSettings.inletFactor,
+                    outletFactor: this.domainSettings.outletFactor,
+                    lateralFactor: this.domainSettings.lateralFactor,
+                    heightFactor: this.domainSettings.heightFactor,
+                    // Параметры сетки
+                    refinementMin: this.domainSettings.refinementMin,
+                    refinementMax: this.domainSettings.refinementMax,
+                    maxCells: this.domainSettings.maxCells
                 }
             };
             
@@ -1327,24 +1833,11 @@ class WindCFD {
     }
     
     async sendToServer(config) {
-        // Показываем прогресс
-        const resultsSection = document.getElementById('wcfd-results-section');
-        resultsSection.classList.remove('wcfd-hidden');
-        resultsSection.innerHTML = `
-            <div style="padding: 15px;">
-                <div style="margin-bottom: 10px; font-weight: bold;">Расчёт CFD (${config.wind.direction}°)...</div>
-                <div style="background: #e0e0e0; border-radius: 10px; height: 20px; overflow: hidden;">
-                    <div id="wcfd-progress-bar" style="background: linear-gradient(90deg, #4CAF50, #8BC34A); height: 100%; width: 0%; transition: width 0.5s;"></div>
-                </div>
-                <div id="wcfd-progress-text2" style="margin-top: 8px; color: #666; font-size: 13px;">Подключение к серверу...</div>
-                <button id="wcfd-stop-btn" class="wcfd-btn wcfd-btn-danger" style="margin-top: 10px;">Остановить</button>
-            </div>
-        `;
-        
-        document.getElementById('wcfd-stop-btn').onclick = () => this.stopCalculation();
+        // Показываем фиксированную секцию прогресса
+        this.showCalcProgress(config.wind.direction);
         
         try {
-            const response = await fetch(`${this.serverUrl}/calculate`, {
+            const response = await this._fetch(`${this.serverUrl}/calculate`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(config)
@@ -1361,10 +1854,53 @@ class WindCFD {
             
         } catch (error) {
             console.error('[WindCFD] Ошибка:', error);
-            document.getElementById('wcfd-progress-text2').textContent = 
-                'Сервер недоступен. Убедитесь что cfd_server.py запущен.';
+            this.updateCalcProgress({ message: 'Сервер недоступен. Убедитесь что cfd_server.py запущен.', progress: 0 });
             this.isCalculating = false;
         }
+    }
+    
+    showCalcProgress(direction) {
+        const section = document.getElementById('wcfd-calc-progress-section');
+        section.classList.remove('wcfd-hidden');
+        
+        const info = document.getElementById('wcfd-calc-progress-info');
+        info.textContent = `Направление: ${direction}°`;
+        
+        const bar = document.getElementById('wcfd-calc-progress-bar');
+        bar.style.width = '0%';
+        
+        const iter = document.getElementById('wcfd-calc-progress-iter');
+        iter.textContent = 'Подключение к серверу...';
+    }
+    
+    updateCalcProgress(status) {
+        const bar = document.getElementById('wcfd-calc-progress-bar');
+        const iter = document.getElementById('wcfd-calc-progress-iter');
+        
+        if (bar) bar.style.width = (status.progress || 0) + '%';
+        if (iter) {
+            if (status.iteration && status.total_iterations) {
+                iter.textContent = `Итерация: ${status.iteration} / ${status.total_iterations}`;
+            } else {
+                iter.textContent = status.message || '...';
+            }
+        }
+    }
+    
+    hideCalcProgress() {
+        // Не скрываем если расчёт ещё идёт
+        if (this.isCalculating) {
+            console.log('[WindCFD] hideCalcProgress skipped - calculation in progress');
+            return;
+        }
+        const section = document.getElementById('wcfd-calc-progress-section');
+        if (section) section.classList.add('wcfd-hidden');
+    }
+    
+    forceHideCalcProgress() {
+        // Принудительное скрытие (для завершения/ошибки)
+        const section = document.getElementById('wcfd-calc-progress-section');
+        if (section) section.classList.add('wcfd-hidden');
     }
     
     async pollStatus() {
@@ -1375,20 +1911,17 @@ class WindCFD {
         }
         
         try {
-            const resp = await fetch(`${this.serverUrl}/status`);
+            const resp = await this._fetch(`${this.serverUrl}/status`);
             const status = await resp.json();
             
-            const progressBar = document.getElementById('wcfd-progress-bar');
-            const progressText = document.getElementById('wcfd-progress-text2');
+            // Обновляем фиксированную секцию прогресса
+            this.updateCalcProgress(status);
             
-            if (progressBar) progressBar.style.width = status.progress + '%';
-            if (progressText) progressText.textContent = status.message;
-            
-            if (status.status === 'running') {
+            if (status.status === 'queued' || status.status === 'running') {
                 setTimeout(() => this.pollStatus(), 2000);
             } else if (status.status === 'completed') {
                 try {
-                    const resultResp = await fetch(`${this.serverUrl}/result`);
+                    const resultResp = await this._fetch(`${this.serverUrl}/result`);
                     const result = await resultResp.json();
                     
                     // Проверяем на ошибку в результате
@@ -1406,6 +1939,8 @@ class WindCFD {
                     
                     this.pollingStopped = true;
                     this.isCalculating = false;
+                    this.hideCalcProgress();
+                    
                     const progressEl = document.getElementById('wcfd-progress');
                     if (progressEl) progressEl.classList.add('hidden');
                     const calcBtn = document.getElementById('wcfd-calculate');
@@ -1414,14 +1949,12 @@ class WindCFD {
                     
                 } catch (resultError) {
                     console.error('[WindCFD] Result error:', resultError);
-                    if (progressText) progressText.textContent = 'Ошибка: ' + resultError.message;
-                    if (progressBar) progressBar.style.background = '#f44336';
+                    this.updateCalcProgress({ message: 'Ошибка: ' + resultError.message, progress: 0 });
                     this.isCalculating = false;
                 }
                 
             } else if (status.status === 'error') {
-                if (progressBar) progressBar.style.background = '#f44336';
-                if (progressText) progressText.textContent = 'Ошибка: ' + status.message;
+                this.updateCalcProgress({ message: 'Ошибка: ' + status.message, progress: 0 });
                 this.pollingStopped = true;
                 this.isCalculating = false;
             }
@@ -1432,10 +1965,19 @@ class WindCFD {
     
     async stopCalculation() {
         try {
-            await fetch(`${this.serverUrl}/stop`, { method: 'POST' });
-            const progressText = document.getElementById('wcfd-progress-text2');
-            if (progressText) progressText.textContent = 'Остановлен';
+            await this._fetch(`${this.serverUrl}/stop`, { method: 'POST' });
+            this.updateCalcProgress({ message: 'Остановлен', progress: 0 });
+            this.pollingStopped = true;
             this.isCalculating = false;
+            
+            // Скрываем прогресс через 2 секунды
+            setTimeout(() => this.hideCalcProgress(), 2000);
+            
+            const progressEl = document.getElementById('wcfd-progress');
+            if (progressEl) progressEl.classList.add('hidden');
+            const calcBtn = document.getElementById('wcfd-calculate');
+            if (calcBtn) calcBtn.disabled = false;
+            this.updateCalculateButtons();
         } catch (e) {
             console.error('[WindCFD] Stop error:', e);
         }
@@ -1542,6 +2084,9 @@ class WindCFD {
         // v2.1: Скрываем векторное поле
         this.hideVectorField();
         
+        // Останавливаем анимацию потоков
+        this.stopFlowAnimationIfRunning();
+        
         this.activeDirection = null;
         
         // Удаляем метку высоты
@@ -1551,15 +2096,18 @@ class WindCFD {
     
     updateResultsSection() {
         const section = document.getElementById('wcfd-results-section');
+        const vectorSection = document.getElementById('wcfd-vector-settings-section');
         const validResults = Object.values(this.results).filter(r => r && !r.cached);
         const count = validResults.length;
         
         if (count === 0) {
             section.classList.add('wcfd-hidden');
+            if (vectorSection) vectorSection.classList.add('wcfd-hidden');
             return;
         }
         
         section.classList.remove('wcfd-hidden');
+        if (vectorSection) vectorSection.classList.remove('wcfd-hidden');
         section.innerHTML = `
             <div class="wcfd-label">Результаты</div>
             <div class="wcfd-results-count">
@@ -1579,7 +2127,7 @@ class WindCFD {
                     <span>Плотность:</span>
                     <span class="wcfd-slice-value" id="wcfd-density-value">${this.vectorDensity}</span>
                 </div>
-                <input type="range" id="wcfd-density-slider" min="5" max="100" step="1" value="${this.vectorDensity}">
+                <input type="range" id="wcfd-density-slider" min="10" max="200" step="5" value="${this.vectorDensity}">
                 <div class="wcfd-slice-header">
                     <span>Масштаб:</span>
                     <span class="wcfd-slice-value" id="wcfd-scale-value">${this.vectorScale}x</span>
@@ -1690,25 +2238,17 @@ class WindCFD {
         
         console.log(`[WindCFD] Отрисовка: ${nx}x${ny}, spacing=${spacing}, origin=[${origin}]`);
         
-        // Определяем диапазон скоростей из данных
-        // Используем min=0 для максимальной контрастности цветов
-        if (data.stats) {
-            this.speedRange = { min: 0, max: data.stats.max_speed };
-        } else {
-            // Fallback: вычисляем из grid
-            let max = -Infinity;
-            for (let iy = 0; iy < ny; iy++) {
-                for (let ix = 0; ix < nx; ix++) {
-                    const v = grid.values[iy][ix];
-                    if (v > 0.01) {
-                        max = Math.max(max, v);
-                    }
-                }
+        // Определяем диапазон скоростей из реальных данных grid
+        let maxSpeed = 0;
+        for (let iy = 0; iy < ny; iy++) {
+            for (let ix = 0; ix < nx; ix++) {
+                const v = grid.values[iy]?.[ix] ?? 0;
+                if (v > maxSpeed) maxSpeed = v;
             }
-            this.speedRange = { min: 0, max: max === -Infinity ? 5 : max };
         }
+        this.speedRange = { min: 0, max: maxSpeed > 0.1 ? maxSpeed : 5 };
         
-        console.log(`[WindCFD] Speed range: 0 - ${this.speedRange.max.toFixed(2)} m/s`);
+        console.log(`[WindCFD] Speed range (from grid): 0 - ${this.speedRange.max.toFixed(2)} m/s`);
         
         // v2.1: Рендерим в зависимости от режима
         if (this.displayMode === 'gradient' || this.displayMode === 'both') {
@@ -1740,22 +2280,64 @@ class WindCFD {
         
         if (nx === 0 || ny === 0) return;
         
-        const canvas = document.createElement('canvas');
-        canvas.width = nx;
-        canvas.height = ny;
-        const ctx = canvas.getContext('2d');
-        const imageData = ctx.createImageData(nx, ny);
+        // Увеличиваем разрешение текстуры для чёткости (до 1024)
+        const scale = Math.min(8, Math.floor(1024 / Math.max(nx, ny)));
+        const texWidth = nx * scale;
+        const texHeight = ny * scale;
         
-        for (let iy = 0; iy < ny; iy++) {
-            for (let ix = 0; ix < nx; ix++) {
-                const speed = grid.values[iy]?.[ix] ?? 0;
+        const canvas = document.createElement('canvas');
+        canvas.width = texWidth;
+        canvas.height = texHeight;
+        const ctx = canvas.getContext('2d');
+        const imageData = ctx.createImageData(texWidth, texHeight);
+        
+        // Бикубическая интерполяция для более плавного градиента
+        const cubicInterp = (p0, p1, p2, p3, t) => {
+            const a = -0.5 * p0 + 1.5 * p1 - 1.5 * p2 + 0.5 * p3;
+            const b = p0 - 2.5 * p1 + 2 * p2 - 0.5 * p3;
+            const c = -0.5 * p0 + 0.5 * p2;
+            const d = p1;
+            return a * t * t * t + b * t * t + c * t + d;
+        };
+        
+        const getVal = (ix, iy) => {
+            ix = Math.max(0, Math.min(nx - 1, ix));
+            iy = Math.max(0, Math.min(ny - 1, iy));
+            return grid.values[iy]?.[ix] ?? 0;
+        };
+        
+        const bicubicInterp = (gx, gy) => {
+            const ix = Math.floor(gx);
+            const iy = Math.floor(gy);
+            const fx = gx - ix;
+            const fy = gy - iy;
+            
+            // 4x4 окрестность
+            const rows = [];
+            for (let dy = -1; dy <= 2; dy++) {
+                const p0 = getVal(ix - 1, iy + dy);
+                const p1 = getVal(ix, iy + dy);
+                const p2 = getVal(ix + 1, iy + dy);
+                const p3 = getVal(ix + 2, iy + dy);
+                rows.push(cubicInterp(p0, p1, p2, p3, fx));
+            }
+            return Math.max(0, cubicInterp(rows[0], rows[1], rows[2], rows[3], fy));
+        };
+        
+        for (let ty = 0; ty < texHeight; ty++) {
+            for (let tx = 0; tx < texWidth; tx++) {
+                const gx = tx / scale;
+                const gy = ty / scale;
+                
+                // Бикубическая интерполяция
+                const speed = bicubicInterp(gx, gy);
+                
                 const color = this.getColorForSpeed(speed);
-                const idx = ((ny - 1 - iy) * nx + ix) * 4;
+                const idx = ((texHeight - 1 - ty) * texWidth + tx) * 4;
                 imageData.data[idx] = color[0];
                 imageData.data[idx + 1] = color[1];
                 imageData.data[idx + 2] = color[2];
-                // v2.1: Полупрозрачность в режиме both
-                imageData.data[idx + 3] = speed < 0.01 ? 0 : (this.displayMode === 'both' ? 150 : 220);
+                imageData.data[idx + 3] = this.displayMode === 'both' ? 150 : 220;
             }
         }
         ctx.putImageData(imageData, 0, 0);
@@ -1793,7 +2375,7 @@ class WindCFD {
         
         if (nx === 0 || ny === 0) return;
         
-        // Шаг выборки
+        // Шаг выборки - отдельно по X и Y
         const stepX = Math.max(1, Math.floor(nx / this.vectorDensity));
         const stepY = Math.max(1, Math.floor(ny / this.vectorDensity));
         
@@ -1821,7 +2403,7 @@ class WindCFD {
                 if (velMag < 0.1) continue;
                 
                 const dir = new THREE.Vector3(vx / velMag, vy / velMag, 0);
-                const pos = new THREE.Vector3(x, y, this.sliceHeight + 0.1);
+                const pos = new THREE.Vector3(x, y, this.sliceHeight + 0.2);
                 
                 // Длина пропорциональна скорости
                 const arrowLength = (speed / this.speedRange.max) * spacing * this.vectorScale;
@@ -1830,15 +2412,16 @@ class WindCFD {
                 const color = this.getColorForSpeed(speed);
                 const hexColor = (color[0] << 16) | (color[1] << 8) | color[2];
                 
-                const arrow = new THREE.ArrowHelper(dir, pos, arrowLength, hexColor, arrowLength * 0.3, arrowLength * 0.2);
+                // ArrowHelper: direction, origin, length, color, headLength, headWidth
+                const arrow = new THREE.ArrowHelper(dir, pos, arrowLength, hexColor, arrowLength * 0.35, arrowLength * 0.25);
                 this.vectorField.add(arrow);
                 this.vectorArrows.push(arrow);
             }
         }
         
         this.sceneManager.scene.add(this.vectorField);
-        this.vectorField.position.set(0, 0, 0); // Сброс позиции после добавления
-        console.log(`[WindCFD] Создано ${this.vectorArrows.length} векторов`);
+        this.vectorField.position.set(0, 0, 0);
+        console.log(`[WindCFD] Создано ${this.vectorArrows.length} векторов (density=${this.vectorDensity}, scale=${this.vectorScale})`);
     }
     
     // v2.1: Скрытие векторного поля
@@ -1979,15 +2562,27 @@ class WindCFD {
     // ==================== Paraview ====================
     
     async downloadParaview() {
+        console.log("[WindCFD] downloadParaview called");
+        console.log("[WindCFD] activeDirection:", this.activeDirection);
+        console.log("[WindCFD] selectedDirection:", this.selectedDirection);
+        console.log("[WindCFD] results:", Object.keys(this.results));
+        console.log("[WindCFD] case_dirs in results:", Object.entries(this.results).map(([k,v]) => `${k}: ${v?.case_dir || 'no case_dir'}`));
+        
         const direction = this.activeDirection ?? this.selectedDirection;
         if (direction === null) {
-            alert('Сначала выберите направление для просмотра');
+            alert('Сначала выберите направление и дождитесь завершения расчёта');
+            return;
+        }
+        
+        // Проверяем есть ли результат для этого направления
+        if (!this.results[direction]) {
+            alert(`Нет результата для направления ${direction}°. Сначала выполните расчёт.`);
             return;
         }
         
         try {
             // Запрашиваем информацию для конкретного направления
-            const resp = await fetch(`${this.serverUrl}/paraview/${direction}`);
+            const resp = await this._fetch(`${this.serverUrl}/paraview/${direction}`);
             
             if (!resp.ok) {
                 const err = await resp.json();
@@ -2074,7 +2669,7 @@ class WindCFD {
             btn.textContent = '⏳ Создание архива...';
             
             try {
-                const response = await fetch(`${this.serverUrl}/download_paraview/${info.wind_direction}`);
+                const response = await this._fetch(`${this.serverUrl}/download_paraview/${info.wind_direction}`);
                 if (!response.ok) throw new Error('Ошибка скачивания');
                 
                 const blob = await response.blob();
@@ -2194,7 +2789,7 @@ class WindCFD {
         resampleBtn.textContent = '⏳ Пересчёт...';
         
         try {
-            const response = await fetch(`${this.serverUrl}/resample`, {
+            const response = await this._fetch(`${this.serverUrl}/resample`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -2286,7 +2881,7 @@ class WindCFD {
         if (!confirm('Удалить все расчёты CFD на сервере? Это удалит все case_ директории.')) return;
         
         try {
-            const resp = await fetch(`${this.serverUrl}/cleanup`, { method: 'POST' });
+            const resp = await this._fetch(`${this.serverUrl}/cleanup`, { method: 'POST' });
             const data = await resp.json();
             console.log('[WindCFD] Сервер очищен:', data);
             
@@ -2322,7 +2917,7 @@ class WindCFD {
         
         // Очищаем на сервере
         try {
-            await fetch(`${this.serverUrl}/cleanup`, { method: 'POST' });
+            await this._fetch(`${this.serverUrl}/cleanup`, { method: 'POST' });
             console.log('[WindCFD] Сервер очищен');
         } catch (e) {
             console.warn('[WindCFD] Ошибка очистки сервера:', e);
