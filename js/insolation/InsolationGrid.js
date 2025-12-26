@@ -4,6 +4,7 @@
  * Инсоляционная сетка на фасадах здания
  * Поддержка множественного выбора зданий
  * Синхронное перемещение с зданием
+ * Кастомная разбивка сетки
  * ============================================
  */
 
@@ -18,6 +19,7 @@ class InsolationGrid {
         this.verticalStep = options.verticalStep || 3.0;
         this.horizontalStep = options.horizontalStep || 3.0;
         this.horizontalMaxStep = options.horizontalMaxStep || 3.3;
+        this.minCellHeight = options.minCellHeight || 2.5;  // Минимальная высота ячейки для точек
         this.offset = options.offset || 0.01;
         this.pointSize = options.pointSize || 0.5;
         
@@ -38,9 +40,15 @@ class InsolationGrid {
         // Материалы
         this.pointMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff });
         this.gridLineMaterial = new THREE.LineBasicMaterial({ 
-            color: 0x1a73e8, 
-            transparent: true, 
-            opacity: 0.4 
+            color: 0x222222,  // Почти чёрный для лучшей видимости
+            transparent: false
+        });
+        
+        // Материал для corner линий (вершины полигона) - оранжевый цилиндр
+        this.cornerLineMaterial = new THREE.MeshBasicMaterial({ 
+            color: 0xff6600,  // Оранжевый
+            transparent: true,
+            opacity: 0.8
         });
         
         // Raycaster для выбора точек
@@ -83,7 +91,13 @@ class InsolationGrid {
         
         for (let meshIndex = 0; meshIndex < meshes.length; meshIndex++) {
             const mesh = meshes[meshIndex];
-            this._createGridForMesh(mesh, meshIndex);
+            
+            // Если есть кастомная разбивка — используем её
+            if (mesh.userData.customGrid) {
+                this._createGridFromCustomLayout(mesh, meshIndex);
+            } else {
+                this._createGridForMesh(mesh, meshIndex);
+            }
         }
         
         this.scene.add(this.pointsGroup);
@@ -182,11 +196,23 @@ class InsolationGrid {
             ]);
         }
         
-        // Горизонтальные линии
+        // Горизонтальные линии (строго каждые 3м + верхняя граница)
+        const horizontalZs = [];
         for (let v = 0; v <= levels; v++) {
             const z = v * this.verticalStep;
-            if (z > height) break;
-            
+            if (z <= height) horizontalZs.push(z);
+        }
+        // Добавляем верхнюю границу если её ещё нет
+        if (horizontalZs[horizontalZs.length - 1] < height) {
+            horizontalZs.push(height);
+        }
+        
+        // Диагностика (только для первого фасада)
+        if (facadeIndex === 0) {
+            console.log(`[InsolationGrid] Фасад 0: height=${height}, horizontalZs=[${horizontalZs.join(', ')}]`);
+        }
+        
+        for (const z of horizontalZs) {
             const linePoints = [
                 new THREE.Vector3(0, 0, z),
                 new THREE.Vector3(0, 0, z)
@@ -203,10 +229,13 @@ class InsolationGrid {
             ]);
         }
         
-        // Расчётные точки
-        for (let v = 0; v < levels; v++) {
-            const z = (v + 0.5) * this.verticalStep;
-            if (z > height) break;
+        // Расчётные точки — в центрах ячеек между горизонтальными линиями
+        // Только для ячеек высотой >= minCellHeight
+        for (let v = 0; v < horizontalZs.length - 1; v++) {
+            const cellHeight = horizontalZs[v + 1] - horizontalZs[v];
+            if (cellHeight < this.minCellHeight) continue;  // Пропускаем низкие ячейки
+            
+            const z = (horizontalZs[v] + horizontalZs[v + 1]) / 2;
             
             for (let h = 0; h < horizontalSegments; h++) {
                 const t = (h + 0.5) / horizontalSegments;
@@ -373,6 +402,21 @@ class InsolationGrid {
             
             if (!localPoints) continue;
             
+            // Corner цилиндры обрабатываем отдельно
+            if (line.userData && line.userData.isCornerLine) {
+                const lp0 = localPoints[0];
+                const lp1 = localPoints[1];
+                const midZ = (lp0.z + lp1.z) / 2;
+                
+                const worldX = lp0.x * cos - lp0.y * sin + pos.x;
+                const worldY = lp0.x * sin + lp0.y * cos + pos.y;
+                
+                line.position.set(worldX, worldY, midZ);
+                // Не нужно rotation.z так как цилиндр симметричен
+                continue;
+            }
+            
+            // Обычные линии
             const positions = line.geometry.attributes.position;
             
             for (let j = 0; j < positions.count && j < localPoints.length; j++) {
@@ -522,6 +566,60 @@ class InsolationGrid {
         this.meshGroups.clear();
     }
     
+    removeGridForMesh(mesh) {
+        if (!mesh) return;
+        
+        const meshGroup = this.meshGroups.get(mesh);
+        if (meshGroup) {
+            // Удаляем линии сетки
+            if (meshGroup.lineObjects) {
+                for (const line of meshGroup.lineObjects) {
+                    if (line.geometry) line.geometry.dispose();
+                    if (line.material) line.material.dispose();
+                    if (this.gridLinesGroup) this.gridLinesGroup.remove(line);
+                }
+            }
+            
+            // Удаляем точки из meshGroup
+            if (meshGroup.pointObjects) {
+                for (const point of meshGroup.pointObjects) {
+                    if (point.geometry) point.geometry.dispose();
+                    if (point.material) point.material.dispose();
+                    if (this.pointsGroup) this.pointsGroup.remove(point);
+                }
+            }
+            
+            this.meshGroups.delete(mesh);
+        }
+        
+        // Удаляем визуальные объекты точек расчёта и сами точки
+        const pointsToRemove = this.calculationPoints.filter(p => p.buildingMesh === mesh);
+        for (const point of pointsToRemove) {
+            if (point.mesh) {
+                if (point.mesh.geometry) point.mesh.geometry.dispose();
+                if (point.mesh.material) point.mesh.material.dispose();
+                if (this.pointsGroup) this.pointsGroup.remove(point.mesh);
+            }
+        }
+        this.calculationPoints = this.calculationPoints.filter(p => p.buildingMesh !== mesh);
+        
+        // Удаляем из selectedPoints индексы удалённых точек
+        this.selectedPoints.clear();
+        
+        // Удаляем из activeMeshes
+        const idx = this.activeMeshes.indexOf(mesh);
+        if (idx >= 0) {
+            this.activeMeshes.splice(idx, 1);
+        }
+        
+        // Удаляем customGrid
+        if (mesh.userData) {
+            delete mesh.userData.customGrid;
+        }
+        
+        console.log('[InsolationGrid] Сетка и точки удалены для mesh');
+    }
+    
     setGridVisible(visible) {
         if (this.gridLinesGroup) {
             this.gridLinesGroup.visible = visible;
@@ -556,6 +654,210 @@ class InsolationGrid {
     
     hasGrid() {
         return this.calculationPoints.length > 0;
+    }
+    
+    // ==================== Кастомная разбивка ====================
+    
+    /**
+     * Создать сетку с кастомной разбивкой
+     */
+    createGridWithCustomLayout(meshOrMeshes) {
+        this.clearGrid();
+        
+        const meshes = Array.isArray(meshOrMeshes) ? meshOrMeshes : [meshOrMeshes];
+        
+        if (meshes.length === 0) {
+            console.warn('[InsolationGrid] Нет зданий для создания сетки');
+            return null;
+        }
+        
+        this.activeMeshes = meshes;
+        
+        this.pointsGroup = new THREE.Group();
+        this.pointsGroup.name = 'insolation-points';
+        
+        this.gridLinesGroup = new THREE.Group();
+        this.gridLinesGroup.name = 'insolation-grid';
+        
+        this.calculationPoints = [];
+        
+        for (let meshIndex = 0; meshIndex < meshes.length; meshIndex++) {
+            const mesh = meshes[meshIndex];
+            
+            if (mesh.userData.customGrid) {
+                this._createGridFromCustomLayout(mesh, meshIndex);
+            } else {
+                this._createGridForMesh(mesh, meshIndex);
+            }
+        }
+        
+        this.scene.add(this.pointsGroup);
+        this.scene.add(this.gridLinesGroup);
+        
+        this._enableSelection();
+        
+        console.log(`[InsolationGrid] Создано ${this.calculationPoints.length} точек (custom layout)`);
+        
+        return this.calculationPoints;
+    }
+    
+    /**
+     * Создать сетку из кастомной разбивки
+     */
+    _createGridFromCustomLayout(mesh, meshIndex) {
+        const customGrid = mesh.userData.customGrid;
+        if (!customGrid || !customGrid.facades) return;
+        
+        const height = mesh.userData.properties?.height || 9;
+        
+        const meshGroup = {
+            pointIndices: [],
+            lineObjects: [],
+            localPointData: [],
+            localLineData: [],
+            height: height
+        };
+        
+        for (let fi = 0; fi < customGrid.facades.length; fi++) {
+            const facade = customGrid.facades[fi];
+            if (!facade) continue;
+            
+            const { start, end, verticalLines, horizontalLines, edgeLength } = facade;
+            
+            // Направление ребра
+            const dirX = (end.x - start.x) / edgeLength;
+            const dirY = (end.y - start.y) / edgeLength;
+            
+            // Нормаль наружу
+            const normalX = -dirY;
+            const normalY = dirX;
+            
+            // Вертикальные линии сетки
+            for (let vi = 0; vi < verticalLines.length; vi++) {
+                const t = verticalLines[vi];
+                const localX = start.x + dirX * t;
+                const localY = start.y + dirY * t;
+                
+                const facadeHeight = horizontalLines[horizontalLines.length - 1];
+                
+                // Первая линия каждого фасада - это corner (вершина полигона)
+                const isCorner = (vi === 0);
+                
+                if (isCorner) {
+                    // Создаём цилиндр для corner линии (более заметный)
+                    const cylinderGeom = new THREE.CylinderGeometry(0.12, 0.12, facadeHeight, 8);
+                    cylinderGeom.rotateX(-Math.PI / 2);  // Поворачиваем Y->Z для вертикальной линии
+                    const cylinder = new THREE.Mesh(cylinderGeom, this.cornerLineMaterial.clone());
+                    cylinder.userData.isCornerLine = true;
+                    cylinder.userData.localPos = { x: localX, y: localY, z: facadeHeight / 2 };
+                    this.gridLinesGroup.add(cylinder);
+                    meshGroup.lineObjects.push(cylinder);
+                    
+                    meshGroup.localLineData.push([
+                        { x: localX, y: localY, z: 0 },
+                        { x: localX, y: localY, z: facadeHeight }
+                    ]);
+                } else {
+                    // Обычная линия
+                    const linePoints = [
+                        new THREE.Vector3(0, 0, 0),
+                        new THREE.Vector3(0, 0, facadeHeight)
+                    ];
+                    
+                    const geometry = new THREE.BufferGeometry().setFromPoints(linePoints);
+                    const line = new THREE.Line(geometry, this.gridLineMaterial.clone());
+                    this.gridLinesGroup.add(line);
+                    meshGroup.lineObjects.push(line);
+                    
+                    meshGroup.localLineData.push([
+                        { x: localX, y: localY, z: 0 },
+                        { x: localX, y: localY, z: facadeHeight }
+                    ]);
+                }
+            }
+            
+            // Горизонтальные линии сетки
+            for (let hi = 0; hi < horizontalLines.length; hi++) {
+                const z = horizontalLines[hi];
+                
+                const linePoints = [
+                    new THREE.Vector3(0, 0, z),
+                    new THREE.Vector3(0, 0, z)
+                ];
+                
+                const geometry = new THREE.BufferGeometry().setFromPoints(linePoints);
+                const line = new THREE.Line(geometry, this.gridLineMaterial.clone());
+                this.gridLinesGroup.add(line);
+                meshGroup.lineObjects.push(line);
+                
+                meshGroup.localLineData.push([
+                    { x: start.x, y: start.y, z: z },
+                    { x: end.x, y: end.y, z: z }
+                ]);
+            }
+            
+            // Расчётные точки — в центрах ячеек
+            // Только для ячеек высотой >= minCellHeight
+            let pointsCreated = 0;
+            
+            for (let hi = 0; hi < horizontalLines.length - 1; hi++) {
+                const cellHeight = horizontalLines[hi + 1] - horizontalLines[hi];
+                if (cellHeight < this.minCellHeight) continue;  // Пропускаем низкие ячейки
+                
+                const z = (horizontalLines[hi] + horizontalLines[hi + 1]) / 2;
+                
+                for (let vi = 0; vi < verticalLines.length - 1; vi++) {
+                    const t = (verticalLines[vi] + verticalLines[vi + 1]) / 2;
+                    
+                    const localX = start.x + dirX * t + normalX * this.offset;
+                    const localY = start.y + dirY * t + normalY * this.offset;
+                    
+                    const pointGeometry = new THREE.SphereGeometry(this.pointSize, 12, 12);
+                    const pointMesh = new THREE.Mesh(pointGeometry, this.pointMaterial.clone());
+                    
+                    const pointIndex = this.calculationPoints.length;
+                    pointMesh.userData = { 
+                        type: 'insolation-point',
+                        index: pointIndex 
+                    };
+                    this.pointsGroup.add(pointMesh);
+                    
+                    meshGroup.pointIndices.push(pointIndex);
+                    
+                    meshGroup.localPointData.push({
+                        localX: localX,
+                        localY: localY,
+                        localZ: z,
+                        localNormalX: normalX,
+                        localNormalY: normalY
+                    });
+                    
+                    this.calculationPoints.push({
+                        index: pointIndex,
+                        position: new THREE.Vector3(0, 0, z),
+                        normal: new THREE.Vector3(normalX, normalY, 0),
+                        facadeIndex: fi,
+                        level: hi,
+                        horizontalIndex: vi,
+                        mesh: pointMesh,
+                        selected: false,
+                        result: null,
+                        buildingMesh: mesh,
+                        buildingIndex: meshIndex,
+                        buildingId: mesh.userData.id
+                    });
+                    
+                    pointsCreated++;
+                }
+            }
+            
+            if (fi === 0) {
+                console.log(`[InsolationGrid] Фасад 0: ${horizontalLines.length - 1} уровней, ${pointsCreated} точек`);
+            }
+        }
+        
+        this.meshGroups.set(mesh, meshGroup);
+        this.syncWithMesh(mesh);
     }
 }
 

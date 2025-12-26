@@ -403,8 +403,33 @@ class InsolationController {
         if (!mesh) return;
         
         if (state.insolationGrid?.isMeshActive(mesh)) {
+            const newHeight = mesh.userData.properties?.height || 9;
+            const customGrid = mesh.userData.customGrid;
+            
+            // Обновляем customGrid при изменении высоты
+            if (customGrid) {
+                for (const facade of customGrid.facades) {
+                    if (!facade) continue;
+                    
+                    const oldMax = facade.horizontalLines[facade.horizontalLines.length - 1];
+                    
+                    // Фильтруем линии которые выше новой высоты
+                    facade.horizontalLines = facade.horizontalLines.filter(z => z <= newHeight);
+                    
+                    // Обновляем верхнюю границу
+                    if (facade.horizontalLines.length === 0 || 
+                        facade.horizontalLines[facade.horizontalLines.length - 1] !== newHeight) {
+                        facade.horizontalLines.push(newHeight);
+                    }
+                    
+                    // Сортируем
+                    facade.horizontalLines.sort((a, b) => a - b);
+                }
+            }
+            
+            // Пересоздаём сетку с сохранением customGrid
             const activeMeshes = state.insolationGrid.getActiveMeshes();
-            state.insolationGrid.createGrid(activeMeshes);
+            state.insolationGrid.createGridWithCustomLayout(activeMeshes);
             
             state.lastCalculatedPoints = null;
             state.lastCalculationResults = null;

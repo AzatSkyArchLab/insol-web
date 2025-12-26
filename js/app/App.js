@@ -51,8 +51,7 @@ import { InsolationController } from '../controllers/InsolationController.js';
 import { WindController } from '../controllers/WindController.js';
 import { ProjectController } from '../controllers/ProjectController.js';
 import { UnderlayController } from '../controllers/UnderlayController.js';
-
-
+import { DetailedGridController } from '../controllers/DetailedGridController.js';
 
 
 class App {
@@ -87,7 +86,8 @@ class App {
             insolation: new InsolationController(this),
             wind: new WindController(this),
             project: new ProjectController(this),
-            underlay: new UnderlayController(this)
+            underlay: new UnderlayController(this),
+            detailedGrid: new DetailedGridController(this)
         };
     }
     
@@ -294,6 +294,14 @@ class App {
         // SelectTool
         state.selectTool = new SelectTool(sm, {
             onSelect: (data, mesh) => {
+                // Проверяем что data не null (клик на пустое место)
+                if (!data) {
+                    if (state.solarPotential) {
+                        state.solarPotential.deselect();
+                    }
+                    return;
+                }
+                
                 if (data.subtype === 'solar-potential' && state.solarPotential) {
                     state.solarPotential.showPanel();
                     state.solarPotential.select();
@@ -579,14 +587,17 @@ class App {
         
         const meshId = mesh.userData.id;
         
-        // Очистка инсоляции если нужно
-        if (state.insolationGrid?.isMeshActive(mesh)) {
-            state.insolationGrid.clearGrid();
-            state.lastCalculatedPoints = null;
-            state.lastActiveMeshes = null;
-            state.lastCalculationResults = null;
+        // Очистка инсоляционной сетки для этого здания
+        if (state.insolationGrid) {
+            state.insolationGrid.removeGridForMesh(mesh);
             
-            bus.emit('insolation:cleared');
+            // Сбрасываем результаты если это было активное здание
+            if (state.insolationGrid.isMeshActive(mesh)) {
+                state.lastCalculatedPoints = null;
+                state.lastActiveMeshes = null;
+                state.lastCalculationResults = null;
+                bus.emit('insolation:cleared');
+            }
         }
         
         // Удаление меша
