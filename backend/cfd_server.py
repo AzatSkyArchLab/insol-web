@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-CFD Server v4.4 - Based on working v4.0 + Paraview fix + case_dir in result
+CFD Server v4.7 - ABL Profile
+Based on v4.6 + atmBoundaryLayer inlet conditions (Richards & Hoxey 1993)
 """
 import os
 import json
@@ -12,15 +13,221 @@ from datetime import datetime
 from aiohttp import web
 import aiohttp_cors
 
+# =============================================================================
+# GEOMETRY VALIDATION (optional - graceful fallback if Shapely not available)
+# =============================================================================
+try:
+    from shapely.geometry import Polygon as ShapelyPolygon
+    from shapely.validation import make_valid
+    SHAPELY_AVAILABLE = True
+except ImportError:
+    SHAPELY_AVAILABLE = False
+    print("[WARNING] Shapely not available - geometry validation disabled")
+
+
+# =============================================================================
+# GEOMETRY HELPER FUNCTIONS
+# =============================================================================
+
+def _is_ccw(coords):
+    """
+    Check if polygon coordinates are counter-clockwise.
+    Uses shoelace formula: CCW = positive signed area.
+    """
+    n = len(coords)
+    if n < 3:
+        return True
+    area = 0.0
+    for i in range(n):
+        j = (i + 1) % n
+        area += coords[i][0] * coords[j][1]
+        area -= coords[j][0] * coords[i][1]
+    return area > 0
+
+
+def _ensure_ccw(coords):
+    """Ensure polygon is counter-clockwise for correct outward normals in STL."""
+    if not _is_ccw(coords):
+        return list(reversed(coords))
+    return list(coords)
+
+
+def _is_convex_polygon(coords):
+    """Check if polygon is convex (can use faster fan triangulation)."""
+    n = len(coords)
+    if n < 3:
+        return True
+    sign = None
+    for i in range(n):
+        p0 = coords[i]
+        p1 = coords[(i + 1) % n]
+        p2 = coords[(i + 2) % n]
+        cross = (p1[0] - p0[0]) * (p2[1] - p1[1]) - (p1[1] - p0[1]) * (p2[0] - p1[0])
+        if cross != 0:
+            if sign is None:
+                sign = cross > 0
+            elif (cross > 0) != sign:
+                return False
+    return True
+
+
+def _triangulate_ear_clipping(coords):
+    """
+    Triangulate polygon using ear clipping algorithm.
+    Works correctly for concave polygons (L-shaped, U-shaped, etc.)
+    Returns list of triangles: [(p0, p1, p2), ...]
+    """
+    if len(coords) < 3:
+        return []
+    
+    # Ensure CCW orientation
+    vertices = list(_ensure_ccw(coords))
+    
+    # Remove closing duplicate if present
+    if len(vertices) > 3:
+        dx = vertices[0][0] - vertices[-1][0]
+        dy = vertices[0][1] - vertices[-1][1]
+        if math.sqrt(dx*dx + dy*dy) < 0.001:
+            vertices = vertices[:-1]
+    
+    if len(vertices) < 3:
+        return []
+    
+    triangles = []
+    indices = list(range(len(vertices)))
+    
+    def is_ear(i):
+        n = len(indices)
+        if n < 3:
+            return False
+        
+        prev_idx = indices[(i - 1) % n]
+        curr_idx = indices[i]
+        next_idx = indices[(i + 1) % n]
+        
+        p0 = vertices[prev_idx]
+        p1 = vertices[curr_idx]
+        p2 = vertices[next_idx]
+        
+        # Check if convex (cross product > 0 for CCW)
+        cross = (p1[0] - p0[0]) * (p2[1] - p0[1]) - (p1[1] - p0[1]) * (p2[0] - p0[0])
+        if cross <= 0:
+            return False
+        
+        # Check no other vertex inside triangle
+        for j in range(n):
+            if j in [(i - 1) % n, i, (i + 1) % n]:
+                continue
+            px, py = vertices[indices[j]]
+            
+            # Point-in-triangle test using barycentric coordinates
+            def sign(ax, ay, bx, by, cx, cy):
+                return (ax - cx) * (by - cy) - (bx - cx) * (ay - cy)
+            
+            d1 = sign(px, py, p0[0], p0[1], p1[0], p1[1])
+            d2 = sign(px, py, p1[0], p1[1], p2[0], p2[1])
+            d3 = sign(px, py, p2[0], p2[1], p0[0], p0[1])
+            
+            has_neg = (d1 < 0) or (d2 < 0) or (d3 < 0)
+            has_pos = (d1 > 0) or (d2 > 0) or (d3 > 0)
+            
+            if not (has_neg and has_pos):  # Point inside triangle
+                return False
+        return True
+    
+    max_iter = len(vertices) * 3  # Safety limit
+    iteration = 0
+    
+    while len(indices) > 3 and iteration < max_iter:
+        ear_found = False
+        n = len(indices)
+        
+        for i in range(n):
+            if is_ear(i):
+                prev_idx = indices[(i - 1) % n]
+                curr_idx = indices[i]
+                next_idx = indices[(i + 1) % n]
+                
+                triangles.append((
+                    vertices[prev_idx],
+                    vertices[curr_idx],
+                    vertices[next_idx]
+                ))
+                indices.pop(i)
+                ear_found = True
+                break
+        
+        if not ear_found:
+            break
+        iteration += 1
+    
+    # Final triangle
+    if len(indices) == 3:
+        triangles.append((
+            vertices[indices[0]],
+            vertices[indices[1]],
+            vertices[indices[2]]
+        ))
+    
+    return triangles
+
+
+def validate_building(coords, height, min_area=1.0):
+    """
+    Validate and clean building polygon.
+    Returns cleaned building dict or None if invalid.
+    """
+    if len(coords) < 3:
+        return None
+    
+    if SHAPELY_AVAILABLE:
+        try:
+            poly = ShapelyPolygon(coords)
+            
+            # Fix self-intersections
+            if not poly.is_valid:
+                poly = make_valid(poly)
+                if poly.is_empty:
+                    return None
+                # make_valid may return MultiPolygon - take largest
+                if poly.geom_type == 'MultiPolygon':
+                    poly = max(poly.geoms, key=lambda g: g.area)
+                elif poly.geom_type != 'Polygon':
+                    return None
+            
+            # Check minimum area
+            if poly.area < min_area:
+                return None
+            
+            # Extract cleaned coordinates
+            coords = list(poly.exterior.coords)
+            
+        except Exception as e:
+            # Fallback to original coords on error
+            pass
+    
+    # Ensure CCW orientation for correct STL normals
+    coords = _ensure_ccw(coords)
+    
+    # Ensure closure
+    if coords[0] != coords[-1]:
+        coords = list(coords) + [coords[0]]
+    
+    return {
+        'coords': [(c[0], c[1]) for c in coords],
+        'height': height
+    }
+
+
 # Paths
 CFD_DIR = os.path.expanduser("~/cfd")
 os.makedirs(CFD_DIR, exist_ok=True)
 
-# COST 732 Domain factors 
-INLET_FACTOR = 5    # 5H до inlet 
-OUTLET_FACTOR = 8   # 8H до outlet
-LATERAL_FACTOR = 2.5  # 2.5H по бокам 
-HEIGHT_FACTOR = 5   # 5H высота 
+# COST 732 Domain factors
+INLET_FACTOR = 5
+OUTLET_FACTOR = 8
+LATERAL_FACTOR = 2.5
+HEIGHT_FACTOR = 5
 
 # ABL Parameters
 KAPPA = 0.41
@@ -61,7 +268,7 @@ class CFDServer:
         print(f"[RESTORE] Restored {len(self.case_dirs)} cases")
     
     async def health(self, request):
-        return web.json_response({"status": "ok", "version": "5.4"})
+        return web.json_response({"status": "ok", "version": "4.7-abl-coded"})
     
     async def get_status(self, request):
         status = dict(self.status)
@@ -345,7 +552,10 @@ class CFDServer:
         os.makedirs(f"{case_dir}/constant/triSurface", exist_ok=True)
         os.makedirs(f"{case_dir}/system", exist_ok=True)
         
+        # Build and validate geometry
         building_list = []
+        invalid_count = 0
+        
         for feature in buildings.get('features', []):
             props = feature.get('properties', {})
             geom = feature.get('geometry', {})
@@ -353,10 +563,20 @@ class CFDServer:
                 coords = geom.get('coordinates', [[]])[0]
                 if len(coords) >= 3:
                     height = props.get('height', 9)
-                    building_list.append({
-                        'coords': [(c[0], c[1]) for c in coords],
-                        'height': height
-                    })
+                    
+                    # Validate and clean geometry
+                    cleaned = validate_building(
+                        coords=[(c[0], c[1]) for c in coords],
+                        height=height
+                    )
+                    
+                    if cleaned:
+                        building_list.append(cleaned)
+                    else:
+                        invalid_count += 1
+        
+        if invalid_count > 0:
+            print(f"[GEOM] Skipped {invalid_count} invalid buildings")
         
         all_x, all_y = [], []
         max_height = 10
@@ -628,12 +848,39 @@ mergeTolerance 1e-6;
         # flow_y > 0: поток идёт в +Y, значит yMin = inlet
         
         def get_patch_bc(patch_name, bc_type):
-            """Генерирует BC для патча в зависимости от типа"""
+            """Генерирует BC для патча в зависимости от типа - ABL профиль для inlet"""
             if bc_type == 'inlet':
+                # ABL логарифмический профиль скорости через codedFixedValue
+                # U(z) = (Ustar/kappa) * ln((z + z0) / z0)
+                # Работает в OpenFOAM Foundation v10
                 return f"""    {patch_name}
     {{
-        type            fixedValue;
+        type            codedFixedValue;
         value           uniform ({ux} {uy} 0);
+        name            ABLInletVelocity;
+        code
+        #{{
+            const vectorField& Cf = patch().Cf();
+            vectorField& field = *this;
+            
+            // ABL parameters (Richards & Hoxey 1993)
+            scalar Uref = {speed};
+            scalar Zref = {ZREF};
+            scalar z0 = {Z0};
+            scalar kappa = 0.41;
+            scalar flowX = {flow_x:.6f};
+            scalar flowY = {flow_y:.6f};
+            
+            // Friction velocity
+            scalar ustar = Uref * kappa / Foam::log((Zref + z0) / z0);
+            
+            forAll(Cf, faceI)
+            {{
+                scalar z = max(Cf[faceI].z(), 0.01);  // Avoid log(0)
+                scalar Umag = (ustar / kappa) * Foam::log((z + z0) / z0);
+                field[faceI] = vector(flowX * Umag, flowY * Umag, 0);
+            }}
+        #}};
     }}"""
             else:  # outlet or lateral
                 return f"""    {patch_name}
@@ -658,8 +905,9 @@ mergeTolerance 1e-6;
     }}"""
         
         def get_patch_bc_k(patch_name, bc_type, k_val):
-            """Генерирует BC для k"""
+            """Генерирует BC для k - fixedValue с расчётным значением ABL"""
             if bc_type == 'inlet':
+                # k = ustar^2 / sqrt(Cmu) - стандартное значение для ABL
                 return f"""    {patch_name}
     {{
         type            fixedValue;
@@ -674,8 +922,9 @@ mergeTolerance 1e-6;
     }}"""
         
         def get_patch_bc_eps(patch_name, bc_type, eps_val):
-            """Генерирует BC для epsilon"""
+            """Генерирует BC для epsilon - fixedValue с расчётным значением ABL"""
             if bc_type == 'inlet':
+                # epsilon = ustar^3 / (kappa * (z + z0)) - стандартное значение для ABL
                 return f"""    {patch_name}
     {{
         type            fixedValue;
@@ -1054,20 +1303,51 @@ RAS
 """)
     
     def _write_stl(self, path, buildings):
+        """
+        Generate STL with improved triangulation.
+        - CCW normalization for correct outward normals
+        - Ear clipping for concave polygons (L-shaped, U-shaped)
+        - Fast fan triangulation for convex polygons
+        """
         lines = ["solid buildings"]
+        tri_count = 0
+        convex_count = 0
+        concave_count = 0
+        
         for b in buildings:
             coords = list(b['coords'])
-            if coords[0] != coords[-1]:
-                coords.append(coords[0])
             h = b['height']
-            for i in range(len(coords) - 1):
-                x0, y0 = coords[i]
-                x1, y1 = coords[i + 1]
+            
+            if len(coords) < 3:
+                continue
+            
+            # Remove closing duplicate for processing
+            if len(coords) > 1 and coords[0] == coords[-1]:
+                poly_coords = coords[:-1]
+            else:
+                poly_coords = coords
+            
+            if len(poly_coords) < 3:
+                continue
+            
+            # Ensure CCW for correct outward normals
+            poly_coords = _ensure_ccw(poly_coords)
+            
+            # === SIDE WALLS ===
+            for i in range(len(poly_coords)):
+                j = (i + 1) % len(poly_coords)
+                x0, y0 = poly_coords[i]
+                x1, y1 = poly_coords[j]
+                
                 dx, dy = x1 - x0, y1 - y0
                 length = math.sqrt(dx*dx + dy*dy)
                 if length < 0.001:
                     continue
+                
+                # Outward normal for CCW polygon
                 nx, ny = dy/length, -dx/length
+                
+                # Lower triangle
                 lines.append(f"  facet normal {nx} {ny} 0")
                 lines.append("    outer loop")
                 lines.append(f"      vertex {x0} {y0} 0")
@@ -1075,6 +1355,9 @@ RAS
                 lines.append(f"      vertex {x1} {y1} {h}")
                 lines.append("    endloop")
                 lines.append("  endfacet")
+                tri_count += 1
+                
+                # Upper triangle
                 lines.append(f"  facet normal {nx} {ny} 0")
                 lines.append("    outer loop")
                 lines.append(f"      vertex {x0} {y0} 0")
@@ -1082,12 +1365,21 @@ RAS
                 lines.append(f"      vertex {x0} {y0} {h}")
                 lines.append("    endloop")
                 lines.append("  endfacet")
-            if len(coords) >= 4:
-                cx = sum(c[0] for c in coords[:-1]) / (len(coords) - 1)
-                cy = sum(c[1] for c in coords[:-1]) / (len(coords) - 1)
-                for i in range(len(coords) - 1):
-                    x0, y0 = coords[i]
-                    x1, y1 = coords[i + 1]
+                tri_count += 1
+            
+            # === ROOF AND FLOOR ===
+            if _is_convex_polygon(poly_coords):
+                # Fast fan triangulation for convex polygons
+                convex_count += 1
+                cx = sum(c[0] for c in poly_coords) / len(poly_coords)
+                cy = sum(c[1] for c in poly_coords) / len(poly_coords)
+                
+                for i in range(len(poly_coords)):
+                    j = (i + 1) % len(poly_coords)
+                    x0, y0 = poly_coords[i]
+                    x1, y1 = poly_coords[j]
+                    
+                    # Roof (normal up)
                     lines.append("  facet normal 0 0 1")
                     lines.append("    outer loop")
                     lines.append(f"      vertex {cx} {cy} {h}")
@@ -1095,6 +1387,9 @@ RAS
                     lines.append(f"      vertex {x1} {y1} {h}")
                     lines.append("    endloop")
                     lines.append("  endfacet")
+                    tri_count += 1
+                    
+                    # Floor (normal down)
                     lines.append("  facet normal 0 0 -1")
                     lines.append("    outer loop")
                     lines.append(f"      vertex {cx} {cy} 0")
@@ -1102,9 +1397,49 @@ RAS
                     lines.append(f"      vertex {x0} {y0} 0")
                     lines.append("    endloop")
                     lines.append("  endfacet")
+                    tri_count += 1
+            else:
+                # Ear clipping for concave polygons
+                concave_count += 1
+                triangles = _triangulate_ear_clipping(poly_coords)
+                
+                if not triangles:
+                    # Fallback to fan if ear clipping fails
+                    cx = sum(c[0] for c in poly_coords) / len(poly_coords)
+                    cy = sum(c[1] for c in poly_coords) / len(poly_coords)
+                    for i in range(len(poly_coords)):
+                        j = (i + 1) % len(poly_coords)
+                        triangles.append(((cx, cy), poly_coords[i], poly_coords[j]))
+                
+                for tri in triangles:
+                    p0, p1, p2 = tri
+                    
+                    # Roof
+                    lines.append("  facet normal 0 0 1")
+                    lines.append("    outer loop")
+                    lines.append(f"      vertex {p0[0]} {p0[1]} {h}")
+                    lines.append(f"      vertex {p1[0]} {p1[1]} {h}")
+                    lines.append(f"      vertex {p2[0]} {p2[1]} {h}")
+                    lines.append("    endloop")
+                    lines.append("  endfacet")
+                    tri_count += 1
+                    
+                    # Floor (reversed winding)
+                    lines.append("  facet normal 0 0 -1")
+                    lines.append("    outer loop")
+                    lines.append(f"      vertex {p0[0]} {p0[1]} 0")
+                    lines.append(f"      vertex {p2[0]} {p2[1]} 0")
+                    lines.append(f"      vertex {p1[0]} {p1[1]} 0")
+                    lines.append("    endloop")
+                    lines.append("  endfacet")
+                    tri_count += 1
+        
         lines.append("endsolid buildings")
         with open(path, 'w') as f:
             f.write('\n'.join(lines))
+        
+        print(f"[STL] Generated {tri_count} triangles for {len(buildings)} buildings")
+        print(f"[STL] Convex: {convex_count}, Concave (ear-clipped): {concave_count}")
     
     async def _extract_results(self, case_dir, direction, speed, sample_height=1.75):
         time_dirs = []
@@ -1229,11 +1564,13 @@ surfaces
         print(f"[GRID] Building {nx}x{ny} grid")
         
         from collections import defaultdict
-        cell_size = spacing * 0.6
+        # Smaller cell_size for better coverage of triangulated VTK data
+        cell_size = spacing * 0.4  # was 0.6
         point_cells = defaultdict(list)
         for p in points:
-            cx = int(p['x'] / cell_size)
-            cy = int(p['y'] / cell_size)
+            # Use floor for consistent cell assignment
+            cx = int(p['x'] // cell_size)
+            cy = int(p['y'] // cell_size)
             point_cells[(cx, cy)].append(p)
         
         grid_2d = []
@@ -1245,18 +1582,20 @@ surfaces
             vec_row = []
             for ix in range(nx):
                 x = x_min + ix * spacing
-                cx = int(x / cell_size)
-                cy = int(y / cell_size)
+                cx = int(x // cell_size)
+                cy = int(y // cell_size)
                 best_p = None
                 best_dist = float('inf')
-                for dcx in [-1, 0, 1]:
-                    for dcy in [-1, 0, 1]:
+                # Expanded search radius: ±2 cells instead of ±1
+                for dcx in [-2, -1, 0, 1, 2]:
+                    for dcy in [-2, -1, 0, 1, 2]:
                         for p in point_cells.get((cx + dcx, cy + dcy), []):
                             dist = (p['x'] - x)**2 + (p['y'] - y)**2
                             if dist < best_dist:
                                 best_dist = dist
                                 best_p = p
-                if best_p and best_dist < (spacing * 1.5)**2:
+                # Increased max distance threshold
+                if best_p and best_dist < (spacing * 2.0)**2:  # was 1.5
                     row.append(best_p['speed'])
                     vec_row.append([best_p.get('vx', 0), best_p.get('vy', 0)])
                 else:
@@ -1407,8 +1746,13 @@ def create_app():
 
 if __name__ == '__main__':
     print("=" * 60)
-    print("CFD Server v4.4 - Based on working v4.0 + fixes")
+    print("CFD Server v4.7 - ABL Profile (codedFixedValue)")
     print("=" * 60)
+    print("ABL inlet conditions (Richards & Hoxey 1993):")
+    print(f"  z0 = {Z0}m (urban roughness)")
+    print(f"  Zref = {ZREF}m (reference height)")
+    print("  Using codedFixedValue for OpenFOAM Foundation v10")
+    print(f"Shapely available: {SHAPELY_AVAILABLE}")
     print(f"CFD directory: {CFD_DIR}")
     print("Starting on http://0.0.0.0:8765")
     print("=" * 60)
