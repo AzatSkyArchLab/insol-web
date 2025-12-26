@@ -1,11 +1,6 @@
 #!/usr/bin/env python3
 """
-CFD Server v3.2 - COST 732 compliant domain sizing
-- Inlet (upwind): 5H from buildings
-- Outlet (downwind): 15H from buildings  
-- Lateral: 5H each side
-- Height: 6H
-- Proper inlet/outlet based on wind direction
+CFD Server v4.4 - Based on working v4.0 + Paraview fix + case_dir in result
 """
 import os
 import json
@@ -21,84 +16,108 @@ import aiohttp_cors
 CFD_DIR = os.path.expanduser("~/cfd")
 os.makedirs(CFD_DIR, exist_ok=True)
 
-# COST 732 Domain factors
-# Domain sizing (reduced for faster calculation)
-# Full COST 732: 5H upstream, 15H downstream - too slow for interactive use
-# Fast mode: 3H upstream, 8H downstream
-INLET_FACTOR = 3      # 3H upstream (was 5H)
-OUTLET_FACTOR = 8     # 8H downstream (was 15H)
-LATERAL_FACTOR = 3    # 3H lateral (was 5H)
-HEIGHT_FACTOR = 5     # 5H height (was 6H)
+# COST 732 Domain factors 
+INLET_FACTOR = 5    # 5H до inlet 
+OUTLET_FACTOR = 8   # 8H до outlet
+LATERAL_FACTOR = 2.5  # 2.5H по бокам 
+HEIGHT_FACTOR = 5   # 5H высота 
 
 # ABL Parameters
 KAPPA = 0.41
 CMU = 0.09
-Z0 = 0.5              # Urban roughness
-ZREF = 10.0           # Meteorological reference height
+Z0 = 0.5
+ZREF = 10.0
 
 
 class CFDServer:
     def __init__(self):
         self.status = {"status": "idle", "progress": 0, "message": ""}
         self.results = {}
-        self.case_dirs = {}  # direction -> case_dir path
+        self.case_dirs = {}
         self.current_case = None
-        
-        # Восстанавливаем существующие кейсы при старте
+        self.current_case_dir = None  # Для отслеживания итераций
+        self.current_iterations = 400  # Текущее количество итераций
         self._restore_existing_cases()
     
     def _restore_existing_cases(self):
-        """Scan CFD_DIR for existing cases and restore references"""
         if not os.path.exists(CFD_DIR):
             return
-        
         import re
         for item in os.listdir(CFD_DIR):
             if not item.startswith('case_'):
                 continue
-            
             case_dir = os.path.join(CFD_DIR, item)
             if not os.path.isdir(case_dir):
                 continue
-            
-            # Extract direction from folder name: case_YYYYMMDD_HHMMSS_XXXdeg
             match = re.search(r'_(\d+)deg$', item)
             if not match:
                 continue
-            
             direction = int(match.group(1))
-            
-            # Check if case has results (final time directory exists)
             time_dirs = [d for d in os.listdir(case_dir) 
                         if d.replace('.', '').isdigit() and float(d) > 0]
-            
             if time_dirs:
                 self.case_dirs[direction] = case_dir
                 print(f"[RESTORE] Found case for {direction}°: {item}")
-        
         print(f"[RESTORE] Restored {len(self.case_dirs)} cases")
     
-    # ==================== API Endpoints ====================
-    
     async def health(self, request):
-        return web.json_response({"status": "ok", "version": "4.0"})
+        return web.json_response({"status": "ok", "version": "5.4"})
     
     async def get_status(self, request):
-        return web.json_response(self.status)
+        status = dict(self.status)
+        
+        # Добавляем текущую итерацию если идёт расчёт
+        if status.get("status") == "running" and self.current_case_dir:
+            iteration, total = self._get_current_iteration()
+            if iteration > 0:
+                status["iteration"] = iteration
+                status["total_iterations"] = total
+                # Пересчитываем прогресс на основе итераций (45-90% = CFD)
+                cfd_progress = 45 + int((iteration / total) * 45)
+                status["progress"] = min(cfd_progress, 89)
+                status["message"] = f"Расчёт CFD... {iteration}/{total}"
+        
+        return web.json_response(status)
+    
+    def _get_current_iteration(self):
+        """Парсим текущую итерацию из лога simpleFoam"""
+        total = self.current_iterations
+        if not self.current_case_dir:
+            return 0, total
+        
+        log_path = os.path.join(self.current_case_dir, "log.simpleFoam")
+        if not os.path.exists(log_path):
+            return 0, total
+        
+        try:
+            # Читаем последние 50 строк
+            with open(log_path, 'rb') as f:
+                f.seek(0, 2)  # Конец файла
+                size = f.tell()
+                f.seek(max(0, size - 4096))  # Последние 4KB
+                lines = f.read().decode('utf-8', errors='ignore').split('\n')
+            
+            # Ищем последнюю строку Time = N
+            for line in reversed(lines):
+                if line.startswith('Time = '):
+                    try:
+                        iteration = int(line.split('=')[1].strip().rstrip('s'))
+                        return iteration, total
+                    except:
+                        pass
+        except:
+            pass
+        
+        return 0, total
     
     async def get_result(self, request):
         angle = request.match_info.get('angle')
         if angle:
             angle_int = int(angle)
-            
-            # If result is in memory, return it
             if angle_int in self.results and self.results[angle_int]:
-                # Сбрасываем статус на idle после получения результата
                 if self.status.get("status") == "completed":
                     self.status = {"status": "idle", "progress": 0, "message": ""}
                 return web.json_response(self.results[angle_int])
-            
-            # If case_dir exists, extract results on demand
             if angle_int in self.case_dirs:
                 try:
                     case_dir = self.case_dirs[angle_int]
@@ -109,33 +128,25 @@ class CFDServer:
                 except Exception as e:
                     print(f"[GET_RESULT] Error: {e}")
                     return web.json_response({"error": str(e)}, status=500)
-            
             return web.json_response({"error": "Not found"}, status=404)
         
         if self.current_case is not None and self.current_case in self.results:
-            # Сбрасываем статус на idle после получения результата
             if self.status.get("status") == "completed":
                 self.status = {"status": "idle", "progress": 0, "message": ""}
             return web.json_response(self.results[self.current_case])
         return web.json_response({"error": "No results"}, status=404)
     
     async def get_directions(self, request):
-        """Return all available directions with their case info"""
         directions = {}
-        
-        # Include both calculated results and restored case_dirs
         all_dirs = set(self.results.keys()) | set(self.case_dirs.keys())
-        
         for direction in all_dirs:
             case_dir = self.case_dirs.get(direction, "")
             case_name = os.path.basename(case_dir) if case_dir else ""
-            
             directions[str(direction)] = {
                 "case_dir": case_dir,
                 "case_name": case_name,
                 "has_data": direction in self.results
             }
-        
         return web.json_response({"directions": directions})
     
     async def cleanup(self, request):
@@ -143,7 +154,6 @@ class CFDServer:
         self.case_dirs = {}
         self.current_case = None
         self.status = {"status": "idle", "progress": 0, "message": ""}
-        
         deleted = 0
         if os.path.exists(CFD_DIR):
             for item in os.listdir(CFD_DIR):
@@ -154,38 +164,26 @@ class CFDServer:
                         deleted += 1
                 except Exception as e:
                     print(f"[CLEANUP] Error: {e}")
-        
         print(f"[CLEANUP] Deleted {deleted} cases")
         return web.json_response({"status": "ok", "deleted": deleted})
     
     async def resample(self, request):
-        """Resample results at different height"""
         data = await request.json()
         direction = data.get('direction')
-        # Accept both 'height' and 'z' parameters
         height = data.get('height') or data.get('z', 1.75)
-        
         if direction is None:
             direction = self.current_case
-        
         if direction is None or direction not in self.case_dirs:
             return web.json_response({"error": "No case found"}, status=404)
-        
         case_dir = self.case_dirs[direction]
         if not os.path.exists(case_dir):
             return web.json_response({"error": "Case directory not found"}, status=404)
-        
         try:
             print(f"[RESAMPLE] Direction {direction}°, height={height}m")
-            
-            # Get wind_speed from existing result or use default
-            wind_speed = 4.0  # default
+            wind_speed = 4.0
             if direction in self.results and self.results[direction]:
                 wind_speed = self.results[direction].get('wind_speed', 4.0)
-            
-            result = await self._extract_results_at_height(case_dir, direction, 
-                                                           wind_speed, 
-                                                           height)
+            result = await self._extract_results(case_dir, direction, wind_speed, height)
             self.results[direction] = result
             return web.json_response(result)
         except Exception as e:
@@ -195,49 +193,54 @@ class CFDServer:
             return web.json_response({"error": str(e)}, status=500)
     
     async def export_paraview(self, request):
-        """Export case for ParaView (POST)"""
         data = await request.json()
         direction = data.get('direction')
-        
         if direction is None:
             direction = self.current_case
-        
         return await self._get_paraview_info(direction)
     
     async def get_paraview(self, request):
-        """Get ParaView info (GET /paraview/{direction})"""
         direction = request.match_info.get('direction')
         if direction:
             direction = int(direction)
         else:
             direction = self.current_case
-        
         return await self._get_paraview_info(direction)
     
     async def _get_paraview_info(self, direction):
-        """Common ParaView info helper"""
+        # Принудительно преобразуем в int
+        if direction is not None:
+            direction = int(direction)
+        
         print(f"[PARAVIEW] Request for direction: {direction}")
         print(f"[PARAVIEW] Available case_dirs: {list(self.case_dirs.keys())}")
         
-        if direction is None or direction not in self.case_dirs:
-            print(f"[PARAVIEW] Error: direction {direction} not in case_dirs")
+        case_dir = None
+        
+        # Ищем в case_dirs
+        if direction is not None and direction in self.case_dirs:
+            case_dir = self.case_dirs[direction]
+        
+        # Fallback: ищем в файловой системе
+        if not case_dir:
+            import re
+            for item in os.listdir(CFD_DIR):
+                if item.startswith('case_') and item.endswith(f'_{direction}deg'):
+                    case_dir = os.path.join(CFD_DIR, item)
+                    print(f"[PARAVIEW] Found in filesystem: {item}")
+                    break
+        
+        if not case_dir or not os.path.exists(case_dir):
+            print(f"[PARAVIEW] Error: direction {direction} not found")
             return web.json_response({"error": "No case found"}, status=404)
         
-        case_dir = self.case_dirs[direction]
-        if not os.path.exists(case_dir):
-            return web.json_response({"error": "Case directory not found"}, status=404)
-        
-        # Create .foam file for ParaView
         foam_file = "case.foam"
         foam_path = os.path.join(case_dir, foam_file)
         with open(foam_path, 'w') as f:
-            f.write("")  # Empty file is enough for ParaView
+            f.write("")
         
-        # Get case name
         case_name = os.path.basename(case_dir)
-        
-        # WSL path for Windows ParaView
-        wsl_path = case_dir.replace('/home/', '\\\\wsl$\\Ubuntu\\home\\')
+        wsl_path = '\\\\wsl$\\Ubuntu' + case_dir.replace('/', '\\')
         
         print(f"[EXPORT] ParaView file: {foam_path}")
         
@@ -252,7 +255,6 @@ class CFDServer:
         })
     
     async def list_cases(self, request):
-        """List all available cases"""
         cases = []
         for direction, case_dir in self.case_dirs.items():
             if os.path.exists(case_dir):
@@ -272,8 +274,6 @@ class CFDServer:
         asyncio.create_task(self._run_calculation(data))
         return web.json_response({"status": "started"})
     
-    # ==================== Calculation ====================
-    
     async def _run_calculation(self, config):
         try:
             self.status = {"status": "running", "progress": 5, "message": "Подготовка..."}
@@ -282,14 +282,18 @@ class CFDServer:
             speed = config.get('wind', {}).get('speed', 5.0)
             buildings = config.get('buildings', {})
             settings = config.get('settings', {})
+            self.current_iterations = settings.get('iterations', 400)
             
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             case_name = f"case_{timestamp}_{int(direction)}deg"
             case_dir = os.path.join(CFD_DIR, case_name)
+            self.current_case_dir = case_dir  # Для отслеживания итераций
             
             print(f"\n{'='*60}")
-            print(f"[CALC] Direction: {direction}°, Speed: {speed:.2f} m/s")
-            print(f"[CALC] Case: {case_dir}")
+            print(f"[CALC] NEW CALCULATION")
+            print(f"[CALC] Direction: {direction}° | Speed: {speed:.2f} m/s")
+            print(f"[CALC] Case: {case_name}")
+            print(f"[CALC] Settings: inlet={settings.get('inletFactor', 'def')}, outlet={settings.get('outletFactor', 'def')}, lateral={settings.get('lateralFactor', 'def')}")
             
             self.status["progress"] = 10
             self.status["message"] = "Генерация кейса..."
@@ -306,8 +310,6 @@ class CFDServer:
             
             self.status["progress"] = 45
             self.status["message"] = "Расчёт CFD..."
-            
-            # Serial расчёт (для маленьких задач быстрее чем parallel из-за overhead decompose/reconstruct)
             await self._run_command(f"cd {case_dir} && simpleFoam > log.simpleFoam 2>&1")
             
             self.status["progress"] = 90
@@ -318,6 +320,7 @@ class CFDServer:
             self.results[direction] = result
             self.case_dirs[direction] = case_dir
             self.current_case = direction
+            self.current_case_dir = None  # Расчёт завершён
             
             self.status = {"status": "completed", "progress": 100, "message": "Готово"}
             print(f"[CALC] Done: {result['stats']['points']} points")
@@ -326,6 +329,7 @@ class CFDServer:
             print(f"[ERROR] {e}")
             import traceback
             traceback.print_exc()
+            self.current_case_dir = None  # Сбрасываем при ошибке
             self.status = {"status": "error", "progress": 0, "message": str(e)}
     
     async def _run_command(self, cmd):
@@ -336,14 +340,11 @@ class CFDServer:
         )
         await proc.communicate()
     
-    # ==================== Case Generation ====================
-    
     def _generate_case(self, case_dir, buildings, settings, direction, speed):
         os.makedirs(f"{case_dir}/0", exist_ok=True)
         os.makedirs(f"{case_dir}/constant/triSurface", exist_ok=True)
         os.makedirs(f"{case_dir}/system", exist_ok=True)
         
-        # Parse buildings
         building_list = []
         for feature in buildings.get('features', []):
             props = feature.get('properties', {})
@@ -357,7 +358,6 @@ class CFDServer:
                         'height': height
                     })
         
-        # Calculate buildings bounding box
         all_x, all_y = [], []
         max_height = 10
         for b in building_list:
@@ -377,70 +377,83 @@ class CFDServer:
         bbox_depth = bbox_ymax - bbox_ymin
         
         H = max_height
-        
-        # COST 732 domain sizing with wind direction
-        # Wind direction: meteorological convention (0=N, 90=E, 180=S, 270=W)
-        # Wind FROM direction, so flow is in opposite direction
         rad = math.radians(direction)
+        flow_x = -math.sin(rad)
+        flow_y = -math.cos(rad)
         
-        # Flow direction (opposite of wind from)
-        flow_x = -math.sin(rad)  # positive = east
-        flow_y = -math.cos(rad)  # positive = north
+        # Факторы домена из настроек (с fallback на глобальные константы)
+        inlet_factor = settings.get('inletFactor', INLET_FACTOR)
+        outlet_factor = settings.get('outletFactor', OUTLET_FACTOR)
+        lateral_factor = settings.get('lateralFactor', LATERAL_FACTOR)
+        height_factor = settings.get('heightFactor', HEIGHT_FACTOR)
         
-        # Calculate domain bounds based on wind direction
-        # Inlet is upwind, outlet is downwind
-        inlet_dist = INLET_FACTOR * H
-        outlet_dist = OUTLET_FACTOR * H
-        lateral_dist = LATERAL_FACTOR * H
-        domain_height = HEIGHT_FACTOR * H
+        inlet_dist = inlet_factor * H
+        outlet_dist = outlet_factor * H
+        lateral_dist = lateral_factor * H
+        domain_height = height_factor * H
         
-        # For simplicity, use axis-aligned domain that covers worst case
-        # Actual inlet/outlet faces are determined by blockMesh boundary setup
-        
-        # Calculate required extents in each direction
-        # For diagonal winds, we need extra space
         abs_fx, abs_fy = abs(flow_x), abs(flow_y)
         
-        # Upwind direction needs inlet_dist, downwind needs outlet_dist
-        if flow_x >= 0:  # Flow towards +X (east)
+        if flow_x >= 0:
             x_min = bbox_xmin - inlet_dist
             x_max = bbox_xmax + outlet_dist
-        else:  # Flow towards -X (west)
+        else:
             x_min = bbox_xmin - outlet_dist
             x_max = bbox_xmax + inlet_dist
         
-        if flow_y >= 0:  # Flow towards +Y (north)
+        if flow_y >= 0:
             y_min = bbox_ymin - inlet_dist
             y_max = bbox_ymax + outlet_dist
-        else:  # Flow towards -Y (south)
+        else:
             y_min = bbox_ymin - outlet_dist
             y_max = bbox_ymax + inlet_dist
         
-        # Add lateral margins
         x_min -= lateral_dist
         x_max += lateral_dist
         y_min -= lateral_dist
         y_max += lateral_dist
-        
         z_max = domain_height
         
-        cell_size = settings.get('cellSize', 3)
+        # Параметры сетки из настроек
+        cell_size = settings.get('cellSize', 5)
+        if cell_size <= 0:
+            cell_size = 5
         iterations = settings.get('iterations', 400)
         sample_height = settings.get('sampleHeight', 1.75)
+        refine_min = settings.get('refinementMin', 1)
+        refine_max = settings.get('refinementMax', 2)
+        max_cells = settings.get('maxCells', 3) * 1000000  # В миллионах
         
-        # ABL parameters
         ustar = speed * KAPPA / math.log((ZREF + Z0) / Z0)
         k_val = ustar**2 / math.sqrt(CMU)
         eps_val = ustar**3 / (KAPPA * (ZREF + Z0))
         
-        print(f"[DOMAIN] COST 732: inlet={inlet_dist:.0f}m, outlet={outlet_dist:.0f}m, lateral={lateral_dist:.0f}m")
+        print(f"[DOMAIN] Direction={direction}° | Factors: inlet={inlet_factor}H, outlet={outlet_factor}H, lateral={lateral_factor}H, height={height_factor}H")
+        print(f"[DOMAIN] Flow vector: ({flow_x:.3f}, {flow_y:.3f}) | Distances: inlet={inlet_dist:.0f}m, outlet={outlet_dist:.0f}m")
         print(f"[DOMAIN] Bounds: X=[{x_min:.0f}, {x_max:.0f}], Y=[{y_min:.0f}, {y_max:.0f}], Z=[0, {z_max:.0f}]")
-        print(f"[DOMAIN] Flow direction: ({flow_x:.2f}, {flow_y:.2f})")
+        print(f"[MESH] cellSize={cell_size}m, refinement=({refine_min},{refine_max}), maxCells={max_cells/1e6:.1f}M")
+        print(f"[CALC] iterations={iterations}")
         print(f"[ABL] u*={ustar:.4f}, k={k_val:.4f}, eps={eps_val:.6f}")
         
-        # Find safe locationInMesh
         loc_x, loc_y = bbox_cx, bbox_cy
         loc_z = max_height + 5
+        
+        # Сохраняем metadata для центрирования результатов
+        import json
+        metadata = {
+            'buildings_bbox': {
+                'xmin': bbox_xmin, 'xmax': bbox_xmax,
+                'ymin': bbox_ymin, 'ymax': bbox_ymax,
+                'cx': bbox_cx, 'cy': bbox_cy,
+                'width': bbox_width, 'height': bbox_depth
+            },
+            'max_height': max_height,
+            'cell_size': cell_size,
+            'direction': direction,
+            'speed': speed
+        }
+        with open(f"{case_dir}/metadata.json", 'w') as f:
+            json.dump(metadata, f)
         
         def point_in_poly(px, py, poly):
             n = len(poly)
@@ -461,31 +474,23 @@ class CFDServer:
                 print(f"[MESH] locationInMesh moved to: ({loc_x:.1f}, {loc_y:.1f})")
                 break
         
-        # Write STL
         self._write_stl(f"{case_dir}/constant/triSurface/buildings.stl", building_list)
         
-        # Grid dimensions
         nx = max(20, int((x_max - x_min) / cell_size))
         ny = max(20, int((y_max - y_min) / cell_size))
         nz = max(15, int(z_max / cell_size))
         
-        # Limit grid size for speed
-        max_cells = 150
-        if nx > max_cells:
-            nx = max_cells
-        if ny > max_cells:
-            ny = max_cells
-        if nz > 50:
-            nz = 50
+        max_grid = 150
+        if nx > max_grid: nx = max_grid
+        if ny > max_grid: ny = max_grid
+        if nz > 50: nz = 50
         
         print(f"[MESH] Grid: {nx}x{ny}x{nz} cells")
         
-        # Determine inlet/outlet patches based on flow direction
-        # Use all 4 sides as inlet/outlet with inletOutlet BC
+        ux = flow_x * speed
+        uy = flow_y * speed
+        print(f"[VELOCITY] U=({ux:.2f}, {uy:.2f}, 0) m/s")
         
-        # ============ Write OpenFOAM files ============
-        
-        # blockMeshDict - all 4 sides as single "sides" patch
         with open(f"{case_dir}/system/blockMeshDict", 'w') as f:
             f.write(f"""FoamFile
 {{
@@ -494,9 +499,7 @@ class CFDServer:
     class       dictionary;
     object      blockMeshDict;
 }}
-
 scale 1;
-
 vertices
 (
     ({x_min} {y_min} 0)
@@ -508,24 +511,31 @@ vertices
     ({x_max} {y_max} {z_max})
     ({x_min} {y_max} {z_max})
 );
-
 blocks
 (
     hex (0 1 2 3 4 5 6 7) ({nx} {ny} {nz}) simpleGrading (1 1 2)
 );
-
 boundary
 (
-    sides
+    xMin
     {{
         type patch;
-        faces
-        (
-            (0 4 7 3)
-            (1 2 6 5)
-            (0 1 5 4)
-            (3 7 6 2)
-        );
+        faces ((0 4 7 3));
+    }}
+    xMax
+    {{
+        type patch;
+        faces ((1 2 6 5));
+    }}
+    yMin
+    {{
+        type patch;
+        faces ((0 1 5 4));
+    }}
+    yMax
+    {{
+        type patch;
+        faces ((3 7 6 2));
     }}
     ground
     {{
@@ -540,7 +550,6 @@ boundary
 );
 """)
         
-        # snappyHexMeshDict
         with open(f"{case_dir}/system/snappyHexMeshDict", 'w') as f:
             f.write(f"""FoamFile
 {{
@@ -549,11 +558,9 @@ boundary
     class       dictionary;
     object      snappyHexMeshDict;
 }}
-
 castellatedMesh true;
 snap            true;
 addLayers       false;
-
 geometry
 {{
     buildings.stl
@@ -562,30 +569,26 @@ geometry
         name buildings;
     }}
 }}
-
 castellatedMeshControls
 {{
-    maxLocalCells       500000;
-    maxGlobalCells      2000000;
+    maxLocalCells       {int(max_cells / 5)};
+    maxGlobalCells      {int(max_cells)};
     minRefinementCells  10;
     nCellsBetweenLevels 2;
     resolveFeatureAngle 30;
     features ();
-    
     refinementSurfaces
     {{
         buildings
         {{
-            level (1 1);
+            level ({refine_min} {refine_max});
             patchInfo {{ type wall; }}
         }}
     }}
-    
     refinementRegions {{ }}
     locationInMesh ({loc_x} {loc_y} {loc_z});
     allowFreeStandingZoneFaces true;
 }}
-
 snapControls
 {{
     nSmoothPatch    3;
@@ -593,12 +596,10 @@ snapControls
     nSolveIter      50;
     nRelaxIter      5;
 }}
-
 addLayersControls
 {{
     layers {{ }}
 }}
-
 meshQualityControls
 {{
     maxNonOrtho 65;
@@ -617,13 +618,101 @@ meshQualityControls
     nSmoothScale 4;
     errorReduction 0.75;
 }}
-
 mergeTolerance 1e-6;
 """)
         
-        # U - velocity with inletOutlet for all sides
-        ux = flow_x * speed
-        uy = flow_y * speed
+        # Определяем BC для каждого патча на основе направления потока
+        # flow_x < 0: поток идёт в -X, значит xMax = inlet
+        # flow_x > 0: поток идёт в +X, значит xMin = inlet
+        # flow_y < 0: поток идёт в -Y, значит yMax = inlet
+        # flow_y > 0: поток идёт в +Y, значит yMin = inlet
+        
+        def get_patch_bc(patch_name, bc_type):
+            """Генерирует BC для патча в зависимости от типа"""
+            if bc_type == 'inlet':
+                return f"""    {patch_name}
+    {{
+        type            fixedValue;
+        value           uniform ({ux} {uy} 0);
+    }}"""
+            else:  # outlet or lateral
+                return f"""    {patch_name}
+    {{
+        type            inletOutlet;
+        inletValue      uniform ({ux} {uy} 0);
+        value           uniform ({ux} {uy} 0);
+    }}"""
+        
+        def get_patch_bc_p(patch_name, bc_type):
+            """Генерирует BC давления для патча"""
+            if bc_type == 'inlet':
+                return f"""    {patch_name}
+    {{
+        type            zeroGradient;
+    }}"""
+            else:  # outlet
+                return f"""    {patch_name}
+    {{
+        type            fixedValue;
+        value           uniform 0;
+    }}"""
+        
+        def get_patch_bc_k(patch_name, bc_type, k_val):
+            """Генерирует BC для k"""
+            if bc_type == 'inlet':
+                return f"""    {patch_name}
+    {{
+        type            fixedValue;
+        value           uniform {k_val};
+    }}"""
+            else:
+                return f"""    {patch_name}
+    {{
+        type            inletOutlet;
+        inletValue      uniform {k_val};
+        value           uniform {k_val};
+    }}"""
+        
+        def get_patch_bc_eps(patch_name, bc_type, eps_val):
+            """Генерирует BC для epsilon"""
+            if bc_type == 'inlet':
+                return f"""    {patch_name}
+    {{
+        type            fixedValue;
+        value           uniform {eps_val};
+    }}"""
+            else:
+                return f"""    {patch_name}
+    {{
+        type            inletOutlet;
+        inletValue      uniform {eps_val};
+        value           uniform {eps_val};
+    }}"""
+        
+        def get_patch_bc_nut(patch_name):
+            """Генерирует BC для nut"""
+            return f"""    {patch_name}
+    {{
+        type            calculated;
+        value           uniform 0;
+    }}"""
+        
+        # Определяем тип каждого патча
+        # Порог для определения "значимого" компонента потока
+        thresh = 0.3
+        
+        xMin_type = 'inlet' if flow_x > thresh else ('outlet' if flow_x < -thresh else 'lateral')
+        xMax_type = 'inlet' if flow_x < -thresh else ('outlet' if flow_x > thresh else 'lateral')
+        yMin_type = 'inlet' if flow_y > thresh else ('outlet' if flow_y < -thresh else 'lateral')
+        yMax_type = 'inlet' if flow_y < -thresh else ('outlet' if flow_y > thresh else 'lateral')
+        
+        # Для диагональных направлений - используем inletOutlet на lateral
+        if xMin_type == 'lateral': xMin_type = 'outlet'
+        if xMax_type == 'lateral': xMax_type = 'outlet'
+        if yMin_type == 'lateral': yMin_type = 'outlet'
+        if yMax_type == 'lateral': yMax_type = 'outlet'
+        
+        print(f"[BC] Patch types: xMin={xMin_type}, xMax={xMax_type}, yMin={yMin_type}, yMax={yMax_type}")
         
         with open(f"{case_dir}/0/U", 'w') as f:
             f.write(f"""FoamFile
@@ -633,30 +722,22 @@ mergeTolerance 1e-6;
     class       volVectorField;
     object      U;
 }}
-
 dimensions      [0 1 -1 0 0 0 0];
-
 internalField   uniform ({ux} {uy} 0);
-
 boundaryField
 {{
-    sides
-    {{
-        type            inletOutlet;
-        inletValue      uniform ({ux} {uy} 0);
-        value           uniform ({ux} {uy} 0);
-    }}
-    
+{get_patch_bc('xMin', xMin_type)}
+{get_patch_bc('xMax', xMax_type)}
+{get_patch_bc('yMin', yMin_type)}
+{get_patch_bc('yMax', yMax_type)}
     ground
     {{
         type            noSlip;
     }}
-    
     top
     {{
         type            slip;
     }}
-    
     buildings
     {{
         type            noSlip;
@@ -664,7 +745,6 @@ boundaryField
 }}
 """)
         
-        # p - pressure
         with open(f"{case_dir}/0/p", 'w') as f:
             f.write(f"""FoamFile
 {{
@@ -673,30 +753,22 @@ boundaryField
     class       volScalarField;
     object      p;
 }}
-
 dimensions      [0 2 -2 0 0 0 0];
-
 internalField   uniform 0;
-
 boundaryField
 {{
-    sides
-    {{
-        type            totalPressure;
-        p0              uniform 0;
-        value           uniform 0;
-    }}
-    
+{get_patch_bc_p('xMin', xMin_type)}
+{get_patch_bc_p('xMax', xMax_type)}
+{get_patch_bc_p('yMin', yMin_type)}
+{get_patch_bc_p('yMax', yMax_type)}
     ground
     {{
         type            zeroGradient;
     }}
-    
     top
     {{
         type            slip;
     }}
-    
     buildings
     {{
         type            zeroGradient;
@@ -704,7 +776,6 @@ boundaryField
 }}
 """)
         
-        # k
         with open(f"{case_dir}/0/k", 'w') as f:
             f.write(f"""FoamFile
 {{
@@ -713,31 +784,23 @@ boundaryField
     class       volScalarField;
     object      k;
 }}
-
 dimensions      [0 2 -2 0 0 0 0];
-
 internalField   uniform {k_val};
-
 boundaryField
 {{
-    sides
-    {{
-        type            inletOutlet;
-        inletValue      uniform {k_val};
-        value           uniform {k_val};
-    }}
-    
+{get_patch_bc_k('xMin', xMin_type, k_val)}
+{get_patch_bc_k('xMax', xMax_type, k_val)}
+{get_patch_bc_k('yMin', yMin_type, k_val)}
+{get_patch_bc_k('yMax', yMax_type, k_val)}
     ground
     {{
         type            kqRWallFunction;
         value           uniform {k_val};
     }}
-    
     top
     {{
         type            zeroGradient;
     }}
-    
     buildings
     {{
         type            kqRWallFunction;
@@ -746,7 +809,6 @@ boundaryField
 }}
 """)
         
-        # epsilon
         with open(f"{case_dir}/0/epsilon", 'w') as f:
             f.write(f"""FoamFile
 {{
@@ -755,31 +817,23 @@ boundaryField
     class       volScalarField;
     object      epsilon;
 }}
-
 dimensions      [0 2 -3 0 0 0 0];
-
 internalField   uniform {eps_val};
-
 boundaryField
 {{
-    sides
-    {{
-        type            inletOutlet;
-        inletValue      uniform {eps_val};
-        value           uniform {eps_val};
-    }}
-    
+{get_patch_bc_eps('xMin', xMin_type, eps_val)}
+{get_patch_bc_eps('xMax', xMax_type, eps_val)}
+{get_patch_bc_eps('yMin', yMin_type, eps_val)}
+{get_patch_bc_eps('yMax', yMax_type, eps_val)}
     ground
     {{
         type            epsilonWallFunction;
         value           uniform {eps_val};
     }}
-    
     top
     {{
         type            zeroGradient;
     }}
-    
     buildings
     {{
         type            epsilonWallFunction;
@@ -788,7 +842,6 @@ boundaryField
 }}
 """)
         
-        # nut
         with open(f"{case_dir}/0/nut", 'w') as f:
             f.write(f"""FoamFile
 {{
@@ -797,31 +850,24 @@ boundaryField
     class       volScalarField;
     object      nut;
 }}
-
 dimensions      [0 2 -1 0 0 0 0];
-
 internalField   uniform 0;
-
 boundaryField
 {{
-    sides
-    {{
-        type            calculated;
-        value           uniform 0;
-    }}
-    
+{get_patch_bc_nut('xMin')}
+{get_patch_bc_nut('xMax')}
+{get_patch_bc_nut('yMin')}
+{get_patch_bc_nut('yMax')}
     ground
     {{
         type            nutkWallFunction;
         value           uniform 0;
     }}
-    
     top
     {{
         type            calculated;
         value           uniform 0;
     }}
-    
     buildings
     {{
         type            nutkWallFunction;
@@ -830,7 +876,6 @@ boundaryField
 }}
 """)
         
-        # controlDict
         with open(f"{case_dir}/system/controlDict", 'w') as f:
             f.write(f"""FoamFile
 {{
@@ -839,7 +884,6 @@ boundaryField
     class       dictionary;
     object      controlDict;
 }}
-
 application     simpleFoam;
 startFrom       startTime;
 startTime       0;
@@ -857,7 +901,6 @@ timePrecision   6;
 runTimeModifiable true;
 """)
         
-        # fvSchemes
         with open(f"{case_dir}/system/fvSchemes", 'w') as f:
             f.write("""FoamFile
 {
@@ -866,17 +909,14 @@ runTimeModifiable true;
     class       dictionary;
     object      fvSchemes;
 }
-
 ddtSchemes
 {
     default         steadyState;
 }
-
 gradSchemes
 {
     default         Gauss linear;
 }
-
 divSchemes
 {
     default         none;
@@ -885,29 +925,24 @@ divSchemes
     div(phi,epsilon) bounded Gauss upwind;
     div((nuEff*dev2(T(grad(U))))) Gauss linear;
 }
-
 laplacianSchemes
 {
     default         Gauss linear corrected;
 }
-
 interpolationSchemes
 {
     default         linear;
 }
-
 snGradSchemes
 {
     default         corrected;
 }
-
 wallDist
 {
     method          meshWave;
 }
 """)
         
-        # fvSolution
         with open(f"{case_dir}/system/fvSolution", 'w') as f:
             f.write("""FoamFile
 {
@@ -916,7 +951,6 @@ wallDist
     class       dictionary;
     object      fvSolution;
 }
-
 solvers
 {
     p
@@ -926,7 +960,6 @@ solvers
         relTol          0.01;
         smoother        GaussSeidel;
     }
-    
     U
     {
         solver          smoothSolver;
@@ -934,7 +967,6 @@ solvers
         tolerance       1e-06;
         relTol          0.01;
     }
-    
     k
     {
         solver          smoothSolver;
@@ -942,7 +974,6 @@ solvers
         tolerance       1e-06;
         relTol          0.01;
     }
-    
     epsilon
     {
         solver          smoothSolver;
@@ -951,14 +982,12 @@ solvers
         relTol          0.01;
     }
 }
-
 SIMPLE
 {
     nNonOrthogonalCorrectors 1;
     consistent      yes;
     pRefCell        0;
     pRefValue       0;
-    
     residualControl
     {
         p               1e-4;
@@ -967,7 +996,6 @@ SIMPLE
         epsilon         1e-4;
     }
 }
-
 relaxationFactors
 {
     fields
@@ -983,7 +1011,6 @@ relaxationFactors
 }
 """)
         
-        # decomposeParDict for parallel execution
         n_procs = min(4, os.cpu_count() or 1)
         with open(f"{case_dir}/system/decomposeParDict", 'w') as f:
             f.write(f"""FoamFile
@@ -993,13 +1020,10 @@ relaxationFactors
     class       dictionary;
     object      decomposeParDict;
 }}
-
 numberOfSubdomains {n_procs};
-
 method          scotch;
 """)
         
-        # transportProperties
         with open(f"{case_dir}/constant/transportProperties", 'w') as f:
             f.write("""FoamFile
 {
@@ -1008,12 +1032,10 @@ method          scotch;
     class       dictionary;
     object      transportProperties;
 }
-
 transportModel  Newtonian;
 nu              nu [0 2 -1 0 0 0 0] 1.5e-05;
 """)
         
-        # turbulenceProperties
         with open(f"{case_dir}/constant/turbulenceProperties", 'w') as f:
             f.write("""FoamFile
 {
@@ -1022,9 +1044,7 @@ nu              nu [0 2 -1 0 0 0 0] 1.5e-05;
     class       dictionary;
     object      turbulenceProperties;
 }
-
 simulationType  RAS;
-
 RAS
 {
     RASModel        kEpsilon;
@@ -1035,13 +1055,11 @@ RAS
     
     def _write_stl(self, path, buildings):
         lines = ["solid buildings"]
-        
         for b in buildings:
             coords = list(b['coords'])
             if coords[0] != coords[-1]:
                 coords.append(coords[0])
             h = b['height']
-            
             for i in range(len(coords) - 1):
                 x0, y0 = coords[i]
                 x1, y1 = coords[i + 1]
@@ -1050,7 +1068,6 @@ RAS
                 if length < 0.001:
                     continue
                 nx, ny = dy/length, -dx/length
-                
                 lines.append(f"  facet normal {nx} {ny} 0")
                 lines.append("    outer loop")
                 lines.append(f"      vertex {x0} {y0} 0")
@@ -1058,7 +1075,6 @@ RAS
                 lines.append(f"      vertex {x1} {y1} {h}")
                 lines.append("    endloop")
                 lines.append("  endfacet")
-                
                 lines.append(f"  facet normal {nx} {ny} 0")
                 lines.append("    outer loop")
                 lines.append(f"      vertex {x0} {y0} 0")
@@ -1066,14 +1082,12 @@ RAS
                 lines.append(f"      vertex {x0} {y0} {h}")
                 lines.append("    endloop")
                 lines.append("  endfacet")
-            
             if len(coords) >= 4:
                 cx = sum(c[0] for c in coords[:-1]) / (len(coords) - 1)
                 cy = sum(c[1] for c in coords[:-1]) / (len(coords) - 1)
                 for i in range(len(coords) - 1):
                     x0, y0 = coords[i]
                     x1, y1 = coords[i + 1]
-                    # Roof (normal up)
                     lines.append("  facet normal 0 0 1")
                     lines.append("    outer loop")
                     lines.append(f"      vertex {cx} {cy} {h}")
@@ -1081,7 +1095,6 @@ RAS
                     lines.append(f"      vertex {x1} {y1} {h}")
                     lines.append("    endloop")
                     lines.append("  endfacet")
-                    # Bottom (normal down) - CRITICAL for watertight mesh
                     lines.append("  facet normal 0 0 -1")
                     lines.append("    outer loop")
                     lines.append(f"      vertex {cx} {cy} 0")
@@ -1089,17 +1102,9 @@ RAS
                     lines.append(f"      vertex {x0} {y0} 0")
                     lines.append("    endloop")
                     lines.append("  endfacet")
-        
         lines.append("endsolid buildings")
-        
         with open(path, 'w') as f:
             f.write('\n'.join(lines))
-    
-    # ==================== Results Extraction ====================
-    
-    async def _extract_results_at_height(self, case_dir, direction, speed, height):
-        """Extract results at specific height - wrapper for resample"""
-        return await self._extract_results(case_dir, direction, speed, height)
     
     async def _extract_results(self, case_dir, direction, speed, sample_height=1.75):
         time_dirs = []
@@ -1110,12 +1115,21 @@ RAS
                     time_dirs.append(d)
             except:
                 pass
-        
         if not time_dirs:
             raise Exception("No time directories found")
         
         last_time = sorted(time_dirs, key=float)[-1]
         print(f"[EXTRACT] Time step: {last_time}, height: {sample_height}m")
+        
+        # Читаем metadata для центрирования
+        import json
+        metadata_path = f"{case_dir}/metadata.json"
+        buildings_bbox = None
+        if os.path.exists(metadata_path):
+            with open(metadata_path) as f:
+                metadata = json.load(f)
+                buildings_bbox = metadata.get('buildings_bbox')
+                print(f"[EXTRACT] Buildings bbox: {buildings_bbox}")
         
         sample_dict = f"""FoamFile
 {{
@@ -1124,13 +1138,11 @@ RAS
     class       dictionary;
     object      sampleDict;
 }}
-
 type            surfaces;
 libs            ("libsampling.so");
 interpolationScheme cellPoint;
 surfaceFormat   vtk;
 fields          ( U );
-
 surfaces
 (
     zSlice
@@ -1146,11 +1158,9 @@ surfaces
     }}
 );
 """
-        
         with open(f"{case_dir}/system/sampleDict", 'w') as f:
             f.write(sample_dict)
         
-        # Clean old postProcessing results before resampling
         pp_dir = f"{case_dir}/postProcessing/sampleDict"
         if os.path.exists(pp_dir):
             shutil.rmtree(pp_dir)
@@ -1163,13 +1173,9 @@ surfaces
         )
         await proc.communicate()
         
-        vtk_patterns = [
-            f"{case_dir}/postProcessing/sampleDict/{last_time}/zSlice.vtk",
-            f"{case_dir}/postProcessing/sampleDict/*/zSlice.vtk",
-        ]
-        
         vtk_file = None
-        for pattern in vtk_patterns:
+        for pattern in [f"{case_dir}/postProcessing/sampleDict/{last_time}/zSlice.vtk",
+                       f"{case_dir}/postProcessing/sampleDict/*/zSlice.vtk"]:
             matches = glob.glob(pattern)
             if matches:
                 vtk_file = matches[0]
@@ -1186,24 +1192,29 @@ surfaces
         if not points:
             raise Exception("No points in result")
         
-        # Build 2D grid
-        all_x = [p['x'] for p in points]
-        all_y = [p['y'] for p in points]
-        
-        x_min_raw, x_max_raw = min(all_x), max(all_x)
-        y_min_raw, y_max_raw = min(all_y), max(all_y)
-        
-        # Обрезаем края domain (там артефакты граничных условий)
-        # Margin = 10% от размера domain с каждой стороны
-        margin_x = (x_max_raw - x_min_raw) * 0.10
-        margin_y = (y_max_raw - y_min_raw) * 0.10
-        
-        x_min = x_min_raw + margin_x
-        x_max = x_max_raw - margin_x
-        y_min = y_min_raw + margin_y
-        y_max = y_max_raw - margin_y
-        
-        print(f"[GRID] Trimmed margins: {margin_x:.1f}m x {margin_y:.1f}m")
+        # Определяем границы grid - центрируем по bbox зданий с запасом 2H
+        if buildings_bbox:
+            # Центр и размер по зданиям + запас
+            H = metadata.get('max_height', 20)
+            margin = 2 * H  # 2H запас вокруг зданий
+            x_min = buildings_bbox['xmin'] - margin
+            x_max = buildings_bbox['xmax'] + margin
+            y_min = buildings_bbox['ymin'] - margin
+            y_max = buildings_bbox['ymax'] + margin
+            print(f"[GRID] Centered on buildings with {margin:.0f}m margin")
+        else:
+            # Fallback: весь домен с 10% margin
+            all_x = [p['x'] for p in points]
+            all_y = [p['y'] for p in points]
+            x_min_raw, x_max_raw = min(all_x), max(all_x)
+            y_min_raw, y_max_raw = min(all_y), max(all_y)
+            margin_x = (x_max_raw - x_min_raw) * 0.10
+            margin_y = (y_max_raw - y_min_raw) * 0.10
+            x_min = x_min_raw + margin_x
+            x_max = x_max_raw - margin_x
+            y_min = y_min_raw + margin_y
+            y_max = y_max_raw - margin_y
+            print(f"[GRID] Trimmed margins: {margin_x:.1f}m x {margin_y:.1f}m")
         
         spacing = 5.0
         nx = max(10, int((x_max - x_min) / spacing) + 1)
@@ -1234,13 +1245,10 @@ surfaces
             vec_row = []
             for ix in range(nx):
                 x = x_min + ix * spacing
-                
                 cx = int(x / cell_size)
                 cy = int(y / cell_size)
-                
                 best_p = None
                 best_dist = float('inf')
-                
                 for dcx in [-1, 0, 1]:
                     for dcy in [-1, 0, 1]:
                         for p in point_cells.get((cx + dcx, cy + dcy), []):
@@ -1248,23 +1256,24 @@ surfaces
                             if dist < best_dist:
                                 best_dist = dist
                                 best_p = p
-                
                 if best_p and best_dist < (spacing * 1.5)**2:
                     row.append(best_p['speed'])
                     vec_row.append([best_p.get('vx', 0), best_p.get('vy', 0)])
                 else:
                     row.append(0)
                     vec_row.append([0, 0])
-            
             grid_2d.append(row)
             vectors.append(vec_row)
         
-        speeds = [p['speed'] for p in points]
-        min_speed, max_speed = min(speeds), max(speeds)
+        # Считаем статистику из финального grid_2d
+        all_speeds = [v for row in grid_2d for v in row if v > 0.01]
+        if all_speeds:
+            min_speed, max_speed = min(all_speeds), max(all_speeds)
+        else:
+            min_speed, max_speed = 0, speed
         
-        print(f"[GRID] Speed range: {min_speed:.2f} - {max_speed:.2f} m/s")
+        print(f"[GRID] Speed range (grid): {min_speed:.2f} - {max_speed:.2f} m/s")
         
-        # Разделяем vectors на vx и vy для UI
         vx_grid = [[v[0] for v in row] for row in vectors]
         vy_grid = [[v[1] for v in row] for row in vectors]
         
@@ -1281,28 +1290,27 @@ surfaces
                 "vx": vx_grid,
                 "vy": vy_grid
             },
+            "buildings_bbox": buildings_bbox,
             "stats": {
                 "min_speed": round(min_speed, 4),
                 "max_speed": round(max_speed, 4),
                 "points": len(points)
-            }
+            },
+            "case_dir": case_dir,
+            "case_name": os.path.basename(case_dir)
         }
     
     def _parse_vtk(self, filepath):
         with open(filepath, 'r') as f:
             content = f.read()
-        
         points = []
         coords = []
         velocities = []
-        
         lines = content.split('\n')
         i = 0
         n_points = 0
-        
         while i < len(lines):
             line = lines[i].strip()
-            
             if line.startswith('POINTS'):
                 parts = line.split()
                 n_points = int(parts[1])
@@ -1318,7 +1326,6 @@ surfaces
                 coords = [(coord_values[j], coord_values[j+1], coord_values[j+2]) 
                          for j in range(0, min(len(coord_values), n_points*3), 3)]
                 continue
-            
             if 'VECTORS' in line and 'U' in line:
                 i += 1
                 vel_values = []
@@ -1332,7 +1339,6 @@ surfaces
                 velocities = [(vel_values[j], vel_values[j+1], vel_values[j+2]) 
                              for j in range(0, min(len(vel_values), n_points*3), 3)]
                 break
-            
             if line.startswith('FIELD'):
                 i += 1
                 if i < len(lines):
@@ -1354,9 +1360,7 @@ surfaces
                                          for j in range(0, min(len(vel_values), field_n*3), 3)]
                             break
                 continue
-            
             i += 1
-        
         for idx, (x, y, z) in enumerate(coords):
             if idx < len(velocities):
                 ux, uy, uz = velocities[idx]
@@ -1368,11 +1372,8 @@ surfaces
                     "vx": round(ux, 4),
                     "vy": round(uy, 4)
                 })
-        
         return points
 
-
-# ==================== Main ====================
 
 def create_app():
     app = web.Application()
@@ -1406,18 +1407,9 @@ def create_app():
 
 if __name__ == '__main__':
     print("=" * 60)
-    print("CFD Server v3.3 - COST 732 + Resample + Export")
+    print("CFD Server v4.4 - Based on working v4.0 + fixes")
     print("=" * 60)
     print(f"CFD directory: {CFD_DIR}")
-    print(f"Domain: inlet={INLET_FACTOR}H, outlet={OUTLET_FACTOR}H, lateral={LATERAL_FACTOR}H, height={HEIGHT_FACTOR}H")
-    print("=" * 60)
-    print("Endpoints:")
-    print("  POST /calculate    - Run CFD calculation")
-    print("  POST /resample     - Resample at different height")
-    print("  POST /export       - Export for ParaView")
-    print("  GET  /result       - Get current result")
-    print("  GET  /cases        - List all cases")
-    print("=" * 60)
     print("Starting on http://0.0.0.0:8765")
     print("=" * 60)
     
