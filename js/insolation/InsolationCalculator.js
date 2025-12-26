@@ -125,28 +125,8 @@ class InsolationCalculator {
             hitPoints: []
         };
         
-        // Собираем ВСЕ здания (актуальный список)
-        const buildingsGroup = this._getBuildingsGroup();
-        const obstacles = [];
-        
-        buildingsGroup.children.forEach(child => {
-            if (child.visible && child.userData.type === 'building') {
-                // Обновляем матрицы для корректного raycasting
-                child.updateMatrixWorld(true);
-                
-                // Убеждаемся что bounding box вычислен
-                if (child.geometry) {
-                    if (!child.geometry.boundingBox) {
-                        child.geometry.computeBoundingBox();
-                    }
-                    if (!child.geometry.boundingSphere) {
-                        child.geometry.computeBoundingSphere();
-                    }
-                }
-                
-                obstacles.push(child);
-            }
-        });
+        // Используем кэшированный список obstacles
+        const obstacles = this._getCachedObstacles();
         
         // Минимальная дистанция — игнорируем пересечения ближе этого
         // (чтобы не считать коллизию с фасадом, на котором стоит точка)
@@ -183,6 +163,100 @@ class InsolationCalculator {
         }
         
         return results;
+    }
+    
+    /**
+     * Получить кэшированный список препятствий
+     * Кэш сбрасывается в calculatePoints() перед каждой серией расчётов
+     */
+    _getCachedObstacles() {
+        if (this._cachedObstacles) {
+            return this._cachedObstacles;
+        }
+        
+        const buildingsGroup = this._getBuildingsGroup();
+        const obstacles = [];
+        const addedMeshes = new Set();  // Для избежания дубликатов
+        
+        buildingsGroup.children.forEach(child => {
+            if (child.visible && child.userData.type === 'building') {
+                // Обновляем матрицы для корректного raycasting
+                child.updateMatrixWorld(true);
+                
+                // Убеждаемся что bounding box вычислен
+                if (child.geometry) {
+                    if (!child.geometry.boundingBox) {
+                        child.geometry.computeBoundingBox();
+                    }
+                    if (!child.geometry.boundingSphere) {
+                        child.geometry.computeBoundingSphere();
+                    }
+                }
+                
+                obstacles.push(child);
+                addedMeshes.add(child.uuid);
+                
+                // Добавляем меши окон и балконов (children здания)
+                child.traverse((descendant) => {
+                    if (descendant.isMesh && 
+                        (descendant.userData.isWindowRecess || descendant.userData.isBalcony) &&
+                        !addedMeshes.has(descendant.uuid)) {
+                        descendant.updateMatrixWorld(true);
+                        if (descendant.geometry && !descendant.geometry.boundingBox) {
+                            descendant.geometry.computeBoundingBox();
+                        }
+                        obstacles.push(descendant);
+                        addedMeshes.add(descendant.uuid);
+                    }
+                });
+                
+                // Добавляем меши из featuresManager
+                const featuresManager = child.userData._featuresManager;
+                if (featuresManager && featuresManager.featuresGroup) {
+                    featuresManager.featuresGroup.traverse((descendant) => {
+                        if (descendant.isMesh && !addedMeshes.has(descendant.uuid)) {
+                            descendant.updateMatrixWorld(true);
+                            if (descendant.geometry && !descendant.geometry.boundingBox) {
+                                descendant.geometry.computeBoundingBox();
+                            }
+                            obstacles.push(descendant);
+                            addedMeshes.add(descendant.uuid);
+                        }
+                    });
+                }
+            }
+        });
+        
+        // Ищем группы cellFeatures в сцене (на случай если не привязаны к зданию)
+        this.scene.traverse((obj) => {
+            if (obj.name === 'cellFeatures' && obj.isGroup) {
+                obj.traverse((descendant) => {
+                    if (descendant.isMesh && !addedMeshes.has(descendant.uuid)) {
+                        descendant.updateMatrixWorld(true);
+                        if (descendant.geometry && !descendant.geometry.boundingBox) {
+                            descendant.geometry.computeBoundingBox();
+                        }
+                        obstacles.push(descendant);
+                        addedMeshes.add(descendant.uuid);
+                    }
+                });
+            }
+        });
+        
+        // Логируем статистику
+        const featuresMeshes = obstacles.filter(o => o.userData.isWindowRecess || o.userData.isBalcony);
+        const buildingCount = obstacles.filter(o => o.userData.type === 'building').length;
+        console.log(`[InsolationCalculator] Cached obstacles: ${obstacles.length} total (buildings: ${buildingCount}, features: ${featuresMeshes.length})`);
+        
+        this._cachedObstacles = obstacles;
+        return obstacles;
+    }
+    
+    /**
+     * Сбросить кэш препятствий (вызывать при изменении геометрии)
+     */
+    invalidateObstaclesCache() {
+        this._cachedObstacles = null;
     }
     
     /**
@@ -316,6 +390,10 @@ class InsolationCalculator {
     calculatePoints(points, excludeMesh = null, normativeMinutes = null, onProgress = null) {
         const results = [];
         const total = points.length;
+        
+        // Сбрасываем кэш obstacles для новой серии расчётов
+        this._cachedObstacles = null;
+        this._obstaclesLogged = false;
         
         for (let i = 0; i < points.length; i++) {
             const result = this.calculatePoint(points[i], excludeMesh, normativeMinutes);

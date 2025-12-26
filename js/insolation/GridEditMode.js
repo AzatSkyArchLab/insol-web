@@ -8,7 +8,10 @@
  * - unprojectToFace для точного определения позиции клика
  * - Режимы: рёбра / ячейки
  * - Pop-up панель
+ * - Окна и балконы (CellFeaturesManager)
  */
+
+import { CellFeaturesManager } from './CellFeaturesManager.js';
 
 class GridEditMode {
     constructor(insolationGrid) {
@@ -32,7 +35,6 @@ class GridEditMode {
         
         // Видимые фасады
         this.visibleFaces = new Set();
-        this._lastVisibleStr = '';  // Для логирования изменений
         
         // Режим: 'edges' или 'cells'
         this.editMode = 'edges';
@@ -57,6 +59,12 @@ class GridEditMode {
         
         // Группа для объектов подсветки (corner edges)
         this.highlightGroup = null;
+        
+        // Группа для подсветки выделенных ячеек
+        this.cellSelectionGroup = null;
+        
+        // Менеджер окон и балконов
+        this.featuresManager = null;
         
         // Pop-up панель
         this.panel = null;
@@ -85,14 +93,54 @@ class GridEditMode {
         this.grid.createGridWithCustomLayout(mesh);
         this.grid.setPointsVisible(false);
         
-        // Создаём группу для подсветки
+        // Создаём группу для подсветки рёбер
         this.highlightGroup = new THREE.Group();
         this.highlightGroup.name = 'gridEditHighlight';
         this.scene.add(this.highlightGroup);
         
+        // Создаём группу для подсветки выделенных ячеек
+        this.cellSelectionGroup = new THREE.Group();
+        this.cellSelectionGroup.name = 'cellSelectionHighlight';
+        this.scene.add(this.cellSelectionGroup);
+        
+        // Используем существующий менеджер окон/балконов или создаём новый
+        if (mesh.userData._featuresManager) {
+            this.featuresManager = mesh.userData._featuresManager;
+            console.log('[GridEditMode] Using existing featuresManager from mesh');
+        } else if (!this.featuresManager) {
+            this.featuresManager = new CellFeaturesManager(this.scene);
+            mesh.userData._featuresManager = this.featuresManager;
+            console.log('[GridEditMode] Created new featuresManager');
+        }
+        
+        // Удаляем прикреплённые меши features (будем показывать временные)
+        const existingFeaturesGroup = mesh.children.find(c => c.name === 'buildingFeatures');
+        if (existingFeaturesGroup) {
+            mesh.remove(existingFeaturesGroup);
+        }
+        
         this._updateVisibleFaces();
         this._buildEdges();
         this._buildCells();
+        
+        // Fallback - если visibleFaces пуст, добавляем все фасады
+        if (this.visibleFaces.size === 0) {
+            const customGrid = mesh.userData.customGrid;
+            if (customGrid) {
+                for (let fi = 0; fi < customGrid.facades.length; fi++) {
+                    if (customGrid.facades[fi]) this.visibleFaces.add(fi);
+                }
+            }
+            console.log('[GridEditMode] Fallback: добавлены все фасады:', this.visibleFaces.size);
+        }
+        
+        // Загружаем сохранённые features из mesh.userData (после _buildCells!)
+        if (mesh.userData.cellFeatures) {
+            this.featuresManager.fromJSON(mesh.userData.cellFeatures, this.cells);
+        }
+        
+        // Перестраиваем 3D объекты окон/балконов
+        this.featuresManager.rebuildAllMeshes(this.cells);
         
         if (this.sceneManager.controls) {
             this.sceneManager.controls.enabled = false;
@@ -170,6 +218,15 @@ class GridEditMode {
         
         this.enabled = false;
         
+        // Сохраняем features в mesh.userData перед отключением
+        this._saveCellFeatures();
+        
+        // Сохраняем featuresManager в mesh для использования вне режима редактирования
+        if (this.activeMesh && this.featuresManager) {
+            this.activeMesh.userData._featuresManager = this.featuresManager;
+            // НЕ очищаем меши - они должны остаться видимыми
+        }
+        
         this.renderer.domElement.removeEventListener('mousedown', this._onMouseDown);
         this.renderer.domElement.removeEventListener('mousemove', this._onMouseMove);
         this.renderer.domElement.removeEventListener('mouseup', this._onMouseUp);
@@ -185,6 +242,16 @@ class GridEditMode {
             this.scene.remove(this.highlightGroup);
             this.highlightGroup = null;
         }
+        
+        // Удаляем группу выделения ячеек
+        if (this.cellSelectionGroup) {
+            this._clearCellSelectionVisuals();
+            this.scene.remove(this.cellSelectionGroup);
+            this.cellSelectionGroup = null;
+        }
+        
+        // Сбрасываем ссылку на featuresManager (но он сохранён в mesh.userData._featuresManager)
+        this.featuresManager = null;
         
         if (this.sceneManager.controls) {
             this.sceneManager.controls.enabled = true;
@@ -211,6 +278,15 @@ class GridEditMode {
     
     applyChanges() {
         if (!this.activeMesh) return;
+        
+        // Сохраняем данные features
+        this._saveCellFeatures();
+        
+        // Привязываем меши окон/балконов к зданию
+        if (this.featuresManager && this.cells.length > 0) {
+            this.featuresManager.attachToBuilding(this.activeMesh, this.cells);
+        }
+        
         this.grid.setPointsVisible(true);
         if (this.onGridChanged) this.onGridChanged(this.activeMesh);
         this.disable();
@@ -249,121 +325,17 @@ class GridEditMode {
         this.visibleFaces.clear();
         
         const mesh = this.activeMesh;
-        const customGrid = mesh.userData.customGrid;
-        if (!customGrid) return;
+        const customGrid = mesh?.userData?.customGrid;
+        if (!customGrid || !customGrid.facades) return;
         
-        const pos = mesh.position;
-        const rot = mesh.rotation.z || 0;
-        const cos = Math.cos(rot);
-        const sin = Math.sin(rot);
-        
-        // Позиция камеры
-        const camX = this.camera.position.x;
-        const camY = this.camera.position.y;
-        
-        // Центр здания в мировых координатах (для определения "внутри/снаружи")
-        let localCenterX = 0, localCenterY = 0, count = 0;
-        for (const facade of customGrid.facades) {
-            if (!facade) continue;
-            localCenterX += facade.start.x;
-            localCenterY += facade.start.y;
-            count++;
-        }
-        if (count > 0) {
-            localCenterX /= count;
-            localCenterY /= count;
-        }
-        const worldCenterX = localCenterX * cos - localCenterY * sin + pos.x;
-        const worldCenterY = localCenterX * sin + localCenterY * cos + pos.y;
-        
-        // Горизонтальное расстояние от камеры до центра здания
-        const horizDist = Math.hypot(camX - worldCenterX, camY - worldCenterY);
-        
-        // Если камера почти строго сверху (горизонтальное расстояние очень мало)
-        // то показываем все фасады
-        if (horizDist < 1) {
-            for (let fi = 0; fi < customGrid.facades.length; fi++) {
-                if (customGrid.facades[fi] && customGrid.facades[fi].edgeLength >= 0.01) {
-                    this.visibleFaces.add(fi);
-                }
-            }
-            return;
-        }
-        
+        // ВРЕМЕННО: всегда показываем все фасады для отладки
         for (let fi = 0; fi < customGrid.facades.length; fi++) {
-            const facade = customGrid.facades[fi];
-            if (!facade) continue;
-            
-            const { start, end, edgeLength } = facade;
-            if (edgeLength < 0.01) continue;
-            
-            // Направление ребра в локальных координатах
-            const edgeDirX = (end.x - start.x) / edgeLength;
-            const edgeDirY = (end.y - start.y) / edgeLength;
-            
-            // Перпендикуляр к ребру (потенциальная нормаль наружу)
-            // Два варианта: (-edgeDirY, edgeDirX) или (edgeDirY, -edgeDirX)
-            let normalX = -edgeDirY;
-            let normalY = edgeDirX;
-            
-            // Центр фасада в локальных координатах
-            const facadeMidX = (start.x + end.x) / 2;
-            const facadeMidY = (start.y + end.y) / 2;
-            
-            // Проверяем, направлена ли нормаль наружу (от центра здания)
-            const toFacadeX = facadeMidX - localCenterX;
-            const toFacadeY = facadeMidY - localCenterY;
-            const dotWithCenter = normalX * toFacadeX + normalY * toFacadeY;
-            
-            // Если нормаль направлена внутрь - инвертируем
-            if (dotWithCenter < 0) {
-                normalX = -normalX;
-                normalY = -normalY;
-            }
-            
-            // Преобразуем нормаль в мировые координаты
-            const worldNormalX = normalX * cos - normalY * sin;
-            const worldNormalY = normalX * sin + normalY * cos;
-            
-            // Центр фасада в мировых координатах
-            const worldFacadeMidX = facadeMidX * cos - facadeMidY * sin + pos.x;
-            const worldFacadeMidY = facadeMidX * sin + facadeMidY * cos + pos.y;
-            
-            // Вектор от центра фасада к камере
-            const toCamX = camX - worldFacadeMidX;
-            const toCamY = camY - worldFacadeMidY;
-            const toCamLen = Math.hypot(toCamX, toCamY);
-            
-            if (toCamLen < 0.01) {
-                this.visibleFaces.add(fi);
-                continue;
-            }
-            
-            // Dot product нормали и направления к камере
-            const dot = worldNormalX * toCamX / toCamLen + worldNormalY * toCamY / toCamLen;
-            
-            // Фасад видим если камера смотрит на его внешнюю сторону (dot > 0)
-            if (dot > 0) {
+            if (customGrid.facades[fi]) {
                 this.visibleFaces.add(fi);
             }
         }
         
-        // Fallback
-        if (this.visibleFaces.size === 0) {
-            for (let fi = 0; fi < customGrid.facades.length; fi++) {
-                if (customGrid.facades[fi] && customGrid.facades[fi].edgeLength >= 0.01) {
-                    this.visibleFaces.add(fi);
-                }
-            }
-        }
-        
-        // Логируем только если набор изменился
-        const visibleStr = Array.from(this.visibleFaces).sort((a,b) => a-b).join(',');
-        if (visibleStr !== this._lastVisibleStr) {
-            this._lastVisibleStr = visibleStr;
-            const total = customGrid.facades.filter(f => f).length;
-            console.log(`[GridEditMode] Видимые фасады: [${visibleStr}] из ${total}`);
-        }
+        console.log('[GridEditMode] _updateVisibleFaces: добавлено', this.visibleFaces.size, 'фасадов');
     }
     
     // ==================== Инициализация ====================
@@ -439,13 +411,17 @@ class GridEditMode {
         const customGrid = mesh.userData.customGrid;
         const meshGroup = this.grid.meshGroups.get(mesh);
         
-        if (!customGrid || !meshGroup) return;
+        if (!customGrid) {
+            console.warn('[GridEditMode] _buildEdges: нет customGrid');
+            return;
+        }
         
         const pos = mesh.position;
         const rot = mesh.rotation.z || 0;
         const cos = Math.cos(rot);
         const sin = Math.sin(rot);
         
+        // Индекс для поиска gridLine (если meshGroup есть)
         let lineIdx = 0;
         
         for (let fi = 0; fi < customGrid.facades.length; fi++) {
@@ -473,11 +449,12 @@ class GridEditMode {
             
             // Вертикальные линии
             for (let vi = 0; vi < verticalLines.length; vi++) {
-                const gridLine = meshGroup.lineObjects[lineIdx];
+                // Получаем gridLine если есть meshGroup
+                const gridLine = meshGroup ? meshGroup.lineObjects[lineIdx] : null;
                 lineIdx++;
                 
+                // Пропускаем первую и последнюю (это границы фасада)
                 if (vi === 0 || vi === verticalLines.length - 1) continue;
-                if (!gridLine) continue;  // Защита от undefined
                 
                 const t = verticalLines[vi];
                 const localX = start.x + dirX * t;
@@ -495,21 +472,21 @@ class GridEditMode {
                     lineIndex: vi,
                     t: t / edgeLength,
                     gridLine: gridLine,
-                    originalMaterial: gridLine.material ? gridLine.material.clone() : null,
+                    originalMaterial: gridLine?.material ? gridLine.material.clone() : null,
                     p1: { x: worldX, y: worldY, z: 0 },
                     p2: { x: worldX, y: worldY, z: facadeHeight },
                     edgeLength: edgeLength,
-                    facadeDir: { x: worldDirX, y: worldDirY }  // В мировых координатах!
+                    facadeDir: { x: worldDirX, y: worldDirY }
                 });
             }
             
             // Горизонтальные линии
             for (let hi = 0; hi < horizontalLines.length; hi++) {
-                const gridLine = meshGroup.lineObjects[lineIdx];
+                const gridLine = meshGroup ? meshGroup.lineObjects[lineIdx] : null;
                 lineIdx++;
                 
+                // Пропускаем первую и последнюю (это границы по высоте)
                 if (hi === 0 || hi === horizontalLines.length - 1) continue;
-                if (!gridLine) continue;  // Защита от undefined
                 
                 const z = horizontalLines[hi];
                 
@@ -524,7 +501,7 @@ class GridEditMode {
                     lineIndex: hi,
                     z: z,
                     gridLine: gridLine,
-                    originalMaterial: gridLine.material ? gridLine.material.clone() : null,
+                    originalMaterial: gridLine?.material ? gridLine.material.clone() : null,
                     p1: { x: wx1, y: wy1, z: z },
                     p2: { x: wx2, y: wy2, z: z },
                     maxZ: facadeHeight
@@ -535,7 +512,8 @@ class GridEditMode {
         console.log('[GridEditMode] Построено рёбер:', this.edges.length, 
             '(corners:', this.edges.filter(e => e.type === 'corner').length,
             'vertical:', this.edges.filter(e => e.type === 'vertical').length,
-            'horizontal:', this.edges.filter(e => e.type === 'horizontal').length + ')');
+            'horizontal:', this.edges.filter(e => e.type === 'horizontal').length + ')',
+            'visibleFaces:', this.visibleFaces.size);
     }
     
     _buildCells() {
@@ -543,40 +521,147 @@ class GridEditMode {
         
         const mesh = this.activeMesh;
         const customGrid = mesh.userData.customGrid;
-        if (!customGrid) return;
+        if (!customGrid) {
+            console.warn('[GridEditMode] _buildCells: нет customGrid');
+            return;
+        }
+        
+        console.log('[GridEditMode] _buildCells: facades:', customGrid.facades.length);
         
         const pos = mesh.position;
         const rot = mesh.rotation.z || 0;
         const cos = Math.cos(rot);
         const sin = Math.sin(rot);
         
+        // Собираем вершины полигона в локальных координатах
+        const vertices = [];
+        for (const facade of customGrid.facades) {
+            if (facade) vertices.push({ x: facade.start.x, y: facade.start.y });
+        }
+        
+        // Вычисляем signed area для определения направления обхода
+        let signedArea = 0;
+        for (let i = 0; i < vertices.length; i++) {
+            const j = (i + 1) % vertices.length;
+            signedArea += vertices[i].x * vertices[j].y;
+            signedArea -= vertices[j].x * vertices[i].y;
+        }
+        signedArea /= 2;
+        
+        // Если CCW (signedArea > 0), нужно инвертировать нормали
+        const needFlipNormals = signedArea > 0;
+        
         for (let fi = 0; fi < customGrid.facades.length; fi++) {
             const facade = customGrid.facades[fi];
             if (!facade) continue;
             
             const { start, end, verticalLines, horizontalLines, edgeLength } = facade;
+            if (edgeLength < 0.01) continue;  // Пропускаем вырожденные фасады
+            
             const dirX = (end.x - start.x) / edgeLength;
             const dirY = (end.y - start.y) / edgeLength;
             
+            // Нормаль - перпендикуляр к направлению фасада
+            // Поворот на 90° против часовой: (x, y) -> (-y, x)
+            let localNx = -dirY;
+            let localNy = dirX;
+            
+            // Инвертируем если полигон по часовой стрелке
+            if (needFlipNormals) {
+                localNx = -localNx;
+                localNy = -localNy;
+            }
+            
+            // Нормаль в мировых координатах
+            const worldNx = localNx * cos - localNy * sin;
+            const worldNy = localNx * sin + localNy * cos;
+            
+            // Направление фасада в мировых координатах
+            const worldDirX = dirX * cos - dirY * sin;
+            const worldDirY = dirX * sin + dirY * cos;
+            
             for (let col = 0; col < verticalLines.length - 1; col++) {
                 for (let row = 0; row < horizontalLines.length - 1; row++) {
-                    const tCenter = (verticalLines[col] + verticalLines[col + 1]) / 2;
-                    const zCenter = (horizontalLines[row] + horizontalLines[row + 1]) / 2;
+                    const t1 = verticalLines[col];
+                    const t2 = verticalLines[col + 1];
+                    const z1 = horizontalLines[row];
+                    const z2 = horizontalLines[row + 1];
                     
-                    const localX = start.x + dirX * tCenter;
-                    const localY = start.y + dirY * tCenter;
-                    const worldX = localX * cos - localY * sin + pos.x;
-                    const worldY = localX * sin + localY * cos + pos.y;
+                    const tCenter = (t1 + t2) / 2;
+                    const zCenter = (z1 + z2) / 2;
+                    
+                    // Центр ячейки в локальных координатах
+                    const localCx = start.x + dirX * tCenter;
+                    const localCy = start.y + dirY * tCenter;
+                    
+                    // Центр ячейки в мировых координатах
+                    const worldCx = localCx * cos - localCy * sin + pos.x;
+                    const worldCy = localCx * sin + localCy * cos + pos.y;
+                    
+                    // Размеры ячейки
+                    const cellWidth = t2 - t1;  // в метрах (t - это расстояние вдоль фасада)
+                    const cellHeight = z2 - z1;
+                    
+                    // Углы ячейки в мировых координатах
+                    const corners = [];
+                    const tValues = [t1, t2, t2, t1];
+                    const zValues = [z1, z1, z2, z2];
+                    
+                    for (let i = 0; i < 4; i++) {
+                        const localX = start.x + dirX * tValues[i];
+                        const localY = start.y + dirY * tValues[i];
+                        corners.push({
+                            x: localX * cos - localY * sin + pos.x,
+                            y: localX * sin + localY * cos + pos.y,
+                            z: zValues[i]
+                        });
+                    }
+                    
+                    // Центр нижней границы ячейки
+                    const bottomCenterLocalX = start.x + dirX * tCenter;
+                    const bottomCenterLocalY = start.y + dirY * tCenter;
+                    const bottomCenterX = bottomCenterLocalX * cos - bottomCenterLocalY * sin + pos.x;
+                    const bottomCenterY = bottomCenterLocalX * sin + bottomCenterLocalY * cos + pos.y;
                     
                     this.cells.push({
                         facadeIndex: fi,
                         col, row,
-                        cx: worldX, cy: worldY, cz: zCenter,
+                        
+                        // Центр ячейки
+                        cx: worldCx, 
+                        cy: worldCy, 
+                        cz: zCenter,
+                        
+                        // Границы по Z
+                        z1, z2,
+                        
+                        // Размеры
+                        cellWidth,
+                        cellHeight,
+                        
+                        // Нормаль (наружу)
+                        nx: worldNx,
+                        ny: worldNy,
+                        
+                        // Направление фасада
+                        faceDirX: worldDirX,
+                        faceDirY: worldDirY,
+                        
+                        // Углы [bottomLeft, bottomRight, topRight, topLeft]
+                        corners,
+                        
+                        // Центр нижней границы (для балконов)
+                        bottomCenterX,
+                        bottomCenterY,
+                        
+                        // Уникальный ключ
                         key: `${fi}-${col}-${row}`
                     });
                 }
             }
         }
+        
+        console.log('[GridEditMode] Построено ячеек:', this.cells.length);
     }
     
     // ==================== Проекция ====================
@@ -588,7 +673,8 @@ class GridEditMode {
         const rect = this.renderer.domElement.getBoundingClientRect();
         return {
             x: (vector.x * 0.5 + 0.5) * rect.width,
-            y: (-vector.y * 0.5 + 0.5) * rect.height
+            y: (-vector.y * 0.5 + 0.5) * rect.height,
+            z: vector.z  // Глубина: -1..1, меньше = ближе к камере
         };
     }
     
@@ -652,7 +738,11 @@ class GridEditMode {
             }
         }
         
-        return { t: bestT, z: bestU * facadeHeight, dist: bestDist };
+        const resultZ = bestU * facadeHeight;
+        console.log('[GridEditMode] _unprojectToFace: t=', bestT.toFixed(3), 'u=', bestU.toFixed(3), 
+            'z=', resultZ.toFixed(2), 'facadeHeight=', facadeHeight.toFixed(2), 'dist=', bestDist.toFixed(1));
+        
+        return { t: bestT, z: resultZ, dist: bestDist };
     }
     
     _distPointToSegment(px, py, x1, y1, x2, y2) {
@@ -676,54 +766,145 @@ class GridEditMode {
     }
     
     _findNearestEdge(screenX, screenY) {
-        let nearest = null;
-        let minDist = 30;  // Увеличенный радиус
-        
         const n = this.activeMesh?.userData.customGrid?.facades.length || 0;
         if (n === 0) return null;
         
+        // Обновляем матрицы камеры
+        this.camera.updateMatrixWorld(true);
+        this.camera.updateProjectionMatrix();
+        
+        // Собираем кандидатов
+        const candidates = [];
+        const maxScreenDist = 30;  // Радиус захвата
+        
         for (const edge of this.edges) {
-            // Проверяем видимость
-            if (edge.type === 'corner') {
-                // Corner виден если виден любой из смежных фасадов
-                const leftFace = (edge.vertexIndex - 1 + n) % n;
-                const rightFace = edge.vertexIndex;
-                const isVisible = this.visibleFaces.has(leftFace) || this.visibleFaces.has(rightFace);
-                if (!isVisible) continue;
-            } else {
-                // Обычные рёбра — только если фасад виден
-                if (!this.visibleFaces.has(edge.facadeIndex)) continue;
-            }
-            
             const s1 = this._project3DToScreen(edge.p1);
             const s2 = this._project3DToScreen(edge.p2);
             
             // Проверяем что точки на экране валидны
             if (!s1 || !s2 || isNaN(s1.x) || isNaN(s2.x)) continue;
             
+            // Пропускаем рёбра за камерой
+            if (s1.z < -1 || s1.z > 1 || s2.z < -1 || s2.z > 1) continue;
+            
             const dist = this._distPointToSegment(screenX, screenY, s1.x, s1.y, s2.x, s2.y);
-            if (dist < minDist) {
-                minDist = dist;
-                nearest = edge;
+            if (dist < maxScreenDist) {
+                // Проверяем видимость центра ребра
+                const midPoint = {
+                    x: (edge.p1.x + edge.p2.x) / 2,
+                    y: (edge.p1.y + edge.p2.y) / 2,
+                    z: (edge.p1.z + edge.p2.z) / 2
+                };
+                
+                if (!this._isPointVisible(midPoint)) {
+                    continue;  // Ребро за зданием
+                }
+                
+                // Средняя глубина ребра
+                const avgZ = (s1.z + s2.z) / 2;
+                candidates.push({
+                    edge,
+                    screenDist: dist,
+                    z: avgZ
+                });
             }
         }
         
-        return nearest;
+        if (candidates.length === 0) return null;
+        
+        // Сортируем: сначала по z (ближе к камере), потом по экранному расстоянию
+        candidates.sort((a, b) => {
+            if (Math.abs(a.z - b.z) > 0.01) {
+                return a.z - b.z;
+            }
+            return a.screenDist - b.screenDist;
+        });
+        
+        return candidates[0].edge;
+    }
+    
+    /**
+     * Проверяет, виден ли 3D точка (не закрыта зданием)
+     * Использует raycast от камеры к точке
+     */
+    _isPointVisible(point3D) {
+        if (!this.activeMesh) return true;
+        
+        // Вектор от камеры к точке
+        const camPos = this.camera.position;
+        const pointVec = new THREE.Vector3(point3D.x, point3D.y, point3D.z);
+        const direction = pointVec.clone().sub(camPos).normalize();
+        
+        const raycaster = new THREE.Raycaster(camPos.clone(), direction);
+        
+        // Проверяем пересечение с зданием
+        const intersects = raycaster.intersectObject(this.activeMesh, false);
+        
+        if (intersects.length === 0) {
+            // Луч не пересекает здание - точка видима
+            return true;
+        }
+        
+        // Расстояние от камеры до пересечения с зданием
+        const buildingDist = intersects[0].distance;
+        
+        // Расстояние от камеры до точки
+        const pointDist = pointVec.distanceTo(camPos);
+        
+        // Точка видима если она ближе к камере чем здание (с запасом для элементов на поверхности)
+        return pointDist < buildingDist + 0.3;
     }
     
     _findNearestFace(screenX, screenY) {
         let bestFace = -1;
         let bestDist = 100;  // Максимальная дистанция
+        let bestZ = Infinity;
         
-        const customGrid = this.activeMesh.userData.customGrid;
+        const customGrid = this.activeMesh?.userData?.customGrid;
+        if (!customGrid) return -1;
+        
+        const pos = this.activeMesh.position;
+        const rot = this.activeMesh.rotation.z || 0;
+        const cos = Math.cos(rot);
+        const sin = Math.sin(rot);
         
         for (let fi = 0; fi < customGrid.facades.length; fi++) {
-            // ТОЛЬКО видимые фасады!
-            if (!this.visibleFaces.has(fi)) continue;
+            const facade = customGrid.facades[fi];
+            if (!facade) continue;
             
             const result = this._unprojectToFace(screenX, screenY, fi);
-            if (result.dist < bestDist && result.t >= 0 && result.t <= 1) {
+            if (result.t < 0 || result.t > 1) continue;
+            if (result.dist > 100) continue;
+            
+            // Вычисляем центр фасада для проверки глубины
+            const { start, end, horizontalLines } = facade;
+            const facadeHeight = horizontalLines[horizontalLines.length - 1];
+            const midX = (start.x + end.x) / 2;
+            const midY = (start.y + end.y) / 2;
+            const midZ = facadeHeight / 2;
+            
+            const worldMidX = midX * cos - midY * sin + pos.x;
+            const worldMidY = midX * sin + midY * cos + pos.y;
+            
+            const screenMid = this._project3DToScreen({ x: worldMidX, y: worldMidY, z: midZ });
+            
+            // Проверяем видимость точки на фасаде
+            const t = result.t;
+            const z = result.z;
+            const pointX = start.x + (end.x - start.x) * t;
+            const pointY = start.y + (end.y - start.y) * t;
+            const worldPointX = pointX * cos - pointY * sin + pos.x;
+            const worldPointY = pointX * sin + pointY * cos + pos.y;
+            
+            if (!this._isPointVisible({ x: worldPointX, y: worldPointY, z: z })) {
+                continue;
+            }
+            
+            // Выбираем ближайший по экранному расстоянию, затем по z
+            if (result.dist < bestDist - 5 || 
+                (result.dist < bestDist + 5 && screenMid.z < bestZ)) {
                 bestDist = result.dist;
+                bestZ = screenMid.z;
                 bestFace = fi;
             }
         }
@@ -732,22 +913,56 @@ class GridEditMode {
     }
     
     _findNearestCell(screenX, screenY) {
-        let nearest = null;
-        let minDist = 30;
+        // Обновляем матрицы камеры на всякий случай
+        this.camera.updateMatrixWorld(true);
+        this.camera.updateProjectionMatrix();
+        
+        // Получаем размеры canvas для проверки границ
+        const rect = this.renderer.domElement.getBoundingClientRect();
+        
+        // Собираем кандидатов - ячейки близкие к курсору
+        const candidates = [];
+        const maxScreenDist = 100;  // Максимальное расстояние на экране
         
         for (const cell of this.cells) {
-            // ТОЛЬКО видимые фасады!
-            if (!this.visibleFaces.has(cell.facadeIndex)) continue;
-            
             const screenPos = this._project3DToScreen({ x: cell.cx, y: cell.cy, z: cell.cz });
-            const dist = Math.hypot(screenX - screenPos.x, screenY - screenPos.y);
-            if (dist < minDist) {
-                minDist = dist;
-                nearest = cell;
+            if (!screenPos || isNaN(screenPos.x) || isNaN(screenPos.y)) continue;
+            
+            // Пропускаем точки за камерой
+            if (screenPos.z < -1 || screenPos.z > 1) continue;
+            
+            // Проверяем что точка на экране (в пределах canvas с запасом)
+            if (screenPos.x < -100 || screenPos.x > rect.width + 100 ||
+                screenPos.y < -100 || screenPos.y > rect.height + 100) continue;
+            
+            const screenDist = Math.hypot(screenX - screenPos.x, screenY - screenPos.y);
+            if (screenDist < maxScreenDist) {
+                // Проверяем видимость ячейки (не за зданием)
+                if (!this._isPointVisible({ x: cell.cx, y: cell.cy, z: cell.cz })) {
+                    continue;  // Ячейка за зданием
+                }
+                
+                candidates.push({
+                    cell,
+                    screenDist,
+                    z: screenPos.z
+                });
             }
         }
         
-        return nearest;
+        if (candidates.length === 0) return null;
+        
+        // Сортируем: сначала по z (ближе к камере = меньше z), потом по экранному расстоянию
+        candidates.sort((a, b) => {
+            // Если z отличается значительно (> 0.01), выбираем ближайший к камере
+            if (Math.abs(a.z - b.z) > 0.01) {
+                return a.z - b.z;
+            }
+            // Иначе выбираем ближайший к курсору
+            return a.screenDist - b.screenDist;
+        });
+        
+        return candidates[0].cell;
     }
     
     _findHorizontalChain(edge) {
@@ -1020,11 +1235,59 @@ class GridEditMode {
     /**
      * Масштабирует вертикальные линии пропорционально при изменении длины фасада
      */
+    /**
+     * Пересчитать вертикальные линии фасада при изменении его длины
+     * Шаг должен быть в диапазоне 3.0 - 3.3 метра
+     */
+    _recalculateVerticalLines(facade) {
+        if (!facade || facade.edgeLength < 0.01) return;
+        
+        const faceWidth = facade.edgeLength;
+        const targetStep = 3.15;  // Целевой шаг
+        const minStep = 3.0;
+        const maxStep = 3.3;
+        
+        // Вычисляем количество сегментов
+        let nSegments = Math.round(faceWidth / targetStep);
+        if (nSegments < 1) nSegments = 1;
+        
+        // Корректируем чтобы шаг был в диапазоне
+        let step = faceWidth / nSegments;
+        if (step < minStep && nSegments > 1) {
+            nSegments--;
+            step = faceWidth / nSegments;
+        } else if (step > maxStep) {
+            nSegments++;
+            step = faceWidth / nSegments;
+        }
+        
+        // Создаём новые вертикальные линии
+        const newLines = [0];
+        for (let i = 1; i < nSegments; i++) {
+            newLines.push(i * step);
+        }
+        newLines.push(faceWidth);
+        
+        facade.verticalLines = newLines;
+    }
+    
+    /**
+     * Масштабировать вертикальные линии пропорционально (для небольших изменений)
+     * При значительных изменениях использовать _recalculateVerticalLines
+     */
     _scaleVerticalLines(facade, oldLength) {
         if (!facade || oldLength < 0.01 || facade.edgeLength < 0.01) return;
         
-        const scale = facade.edgeLength / oldLength;
         const newLength = facade.edgeLength;
+        const changeRatio = Math.abs(newLength - oldLength) / oldLength;
+        
+        // Если изменение > 20%, пересчитываем полностью
+        if (changeRatio > 0.2) {
+            this._recalculateVerticalLines(facade);
+            return;
+        }
+        
+        const scale = newLength / oldLength;
         
         // Масштабируем все линии пропорционально
         for (let i = 0; i < facade.verticalLines.length; i++) {
@@ -1035,19 +1298,14 @@ class GridEditMode {
         facade.verticalLines[0] = 0;
         facade.verticalLines[facade.verticalLines.length - 1] = newLength;
         
-        // Удаляем линии которые стали слишком близко друг к другу (< 0.3м)
-        const minGap = 0.3;
-        const filtered = [0];
-        for (let i = 1; i < facade.verticalLines.length - 1; i++) {
-            const pos = facade.verticalLines[i];
-            const prevPos = filtered[filtered.length - 1];
-            if (pos - prevPos >= minGap && newLength - pos >= minGap) {
-                filtered.push(pos);
+        // Проверяем шаг - если вышел за диапазон, пересчитываем
+        for (let i = 1; i < facade.verticalLines.length; i++) {
+            const step = facade.verticalLines[i] - facade.verticalLines[i-1];
+            if (step < 2.5 || step > 3.8) {
+                this._recalculateVerticalLines(facade);
+                return;
             }
         }
-        filtered.push(newLength);
-        
-        facade.verticalLines = filtered;
     }
     
     _deleteSelectedEdge() {
@@ -1066,6 +1324,12 @@ class GridEditMode {
             
             const vi = edge.vertexIndex;
             console.log('[GridEditMode] Удаление вершины', vi);
+            
+            // Обновляем ключи cellFeatures ПЕРЕД перестройкой
+            // Удаляем features для удаляемого фасада и сдвигаем индексы
+            if (this.featuresManager) {
+                this.featuresManager.shiftFacadeIndices(vi, n);
+            }
             
             // Получаем все точки из customGrid
             const localPoints = [];
@@ -1091,11 +1355,20 @@ class GridEditMode {
             
             const vi = edge.lineIndex;
             if (vi > 0 && vi < facade.verticalLines.length - 1) {
+                // Обновляем ключи cellFeatures для этого фасада
+                if (this.featuresManager) {
+                    this.featuresManager.shiftColumnIndices(edge.facadeIndex, vi, facade.verticalLines.length - 1);
+                }
                 facade.verticalLines.splice(vi, 1);
                 console.log('[GridEditMode] - вертикальная линия');
             }
         } else if (edge.type === 'horizontal') {
             const hi = edge.lineIndex;
+            // Обновляем ключи cellFeatures для всех фасадов
+            if (this.featuresManager) {
+                const maxHi = customGrid.facades[0]?.horizontalLines?.length - 1 || 0;
+                this.featuresManager.shiftRowIndices(hi, maxHi, customGrid.facades.length);
+            }
             for (const f of customGrid.facades) {
                 if (f && hi > 0 && hi < f.horizontalLines.length - 1) {
                     f.horizontalLines.splice(hi, 1);
@@ -1204,6 +1477,8 @@ class GridEditMode {
     _handleMouseDown(event) {
         if (!this.enabled || event.button !== 0) return;
         
+        console.log('[GridEditMode] MouseDown, editMode:', this.editMode, 'enabled:', this.enabled);
+        
         // Обновляем видимые фасады перед любым действием
         this._updateVisibleFaces();
         
@@ -1214,6 +1489,10 @@ class GridEditMode {
         // Режим ячеек
         if (this.editMode === 'cells') {
             const cell = this._findNearestCell(screenX, screenY);
+            console.log('[GridEditMode] Cell click:', screenX, screenY, 
+                'found:', cell ? cell.key : 'none', 
+                'cells total:', this.cells.length,
+                'visibleFaces:', this.visibleFaces.size);
             if (cell) {
                 this._selectCell(cell, event.shiftKey, event.ctrlKey, event.altKey);
             }
@@ -1235,24 +1514,25 @@ class GridEditMode {
         // Ctrl+клик — добавить горизонтальную линию
         if (event.ctrlKey) {
             const fi = this._findNearestFace(screenX, screenY);
-            console.log('[GridEditMode] Ctrl+click, face:', fi);
+            console.log('[GridEditMode] Ctrl+click, face:', fi, 'screenX:', screenX, 'screenY:', screenY);
             if (fi >= 0) {
-                const { z } = this._unprojectToFace(screenX, screenY, fi);
-                this._addHorizontalLine(z);
+                const result = this._unprojectToFace(screenX, screenY, fi);
+                console.log('[GridEditMode] Unproject result:', result);
+                this._addHorizontalLine(result.z);
             }
             return;
         }
         
         // Обычный клик — выбор/drag
         const edge = this._findNearestEdge(screenX, screenY);
+        console.log('[GridEditMode] Edge click:', screenX, screenY,
+            'found:', edge ? edge.type : 'none',
+            'edges total:', this.edges.length,
+            '(corners:', this.edges.filter(e => e.type === 'corner').length,
+            'vertical:', this.edges.filter(e => e.type === 'vertical').length,
+            'horizontal:', this.edges.filter(e => e.type === 'horizontal').length + ')');
         
         if (edge) {
-            const fi = edge.type === 'corner' ? edge.vertexIndex : edge.facadeIndex;
-            const isVisible = this.visibleFaces.has(fi);
-            console.log('[GridEditMode] Click edge:', edge.type, 
-                edge.type === 'corner' ? `vertex:${edge.vertexIndex}` : `line:${edge.lineIndex}`,
-                `facade:${fi}`, isVisible ? '(visible)' : '(HIDDEN - BUG!)');
-            
             // Сбрасываем предыдущее выделение если это другой edge
             if (this.selectedEdge && !this._isSameEdge(this.selectedEdge, edge)) {
                 this._restoreEdge(this.selectedEdge);
@@ -1410,6 +1690,207 @@ class GridEditMode {
             this.selectedCells.clear();
             this.selectedCells.add(cell.key);
         }
+        
+        // Обновляем визуализацию выделения
+        this._updateCellSelectionVisuals();
+    }
+    
+    /**
+     * Обновить визуализацию выделенных ячеек
+     */
+    _updateCellSelectionVisuals() {
+        if (!this.cellSelectionGroup) return;
+        
+        // Очищаем старую визуализацию
+        while (this.cellSelectionGroup.children.length > 0) {
+            const obj = this.cellSelectionGroup.children[0];
+            if (obj.geometry) obj.geometry.dispose();
+            if (obj.material) obj.material.dispose();
+            this.cellSelectionGroup.remove(obj);
+        }
+        
+        // Если режим не ячейки - не показываем
+        if (this.editMode !== 'cells') return;
+        
+        // Создаём подсветку для каждой выделенной ячейки
+        for (const cellKey of this.selectedCells) {
+            const cell = this.cells.find(c => c.key === cellKey);
+            if (!cell) continue;
+            
+            // Временно отключаем фильтрацию по visibleFaces
+            // if (this.visibleFaces.size > 0 && !this.visibleFaces.has(cell.facadeIndex)) continue;
+            
+            // Создаём прямоугольник из 4 углов ячейки
+            const corners = cell.corners;
+            if (!corners || corners.length < 4) continue;
+            
+            // Немного смещаем наружу чтобы было видно поверх стены
+            const offset = 0.05;
+            const nx = cell.nx;
+            const ny = cell.ny;
+            
+            const points = [
+                new THREE.Vector3(corners[0].x + nx * offset, corners[0].y + ny * offset, corners[0].z),
+                new THREE.Vector3(corners[1].x + nx * offset, corners[1].y + ny * offset, corners[1].z),
+                new THREE.Vector3(corners[2].x + nx * offset, corners[2].y + ny * offset, corners[2].z),
+                new THREE.Vector3(corners[3].x + nx * offset, corners[3].y + ny * offset, corners[3].z),
+                new THREE.Vector3(corners[0].x + nx * offset, corners[0].y + ny * offset, corners[0].z)  // замыкаем
+            ];
+            
+            // Контур ячейки
+            const lineGeom = new THREE.BufferGeometry().setFromPoints(points);
+            const lineMat = new THREE.LineBasicMaterial({ color: 0x00ff88, linewidth: 2 });
+            const line = new THREE.Line(lineGeom, lineMat);
+            this.cellSelectionGroup.add(line);
+            
+            // Полупрозрачная заливка - используем актуальные размеры ячейки
+            const width = cell.cellWidth;
+            const height = cell.cellHeight;
+            
+            const planeGeom = new THREE.PlaneGeometry(width, height);
+            const planeMat = new THREE.MeshBasicMaterial({ 
+                color: 0x00ff88, 
+                transparent: true, 
+                opacity: 0.25,
+                side: THREE.DoubleSide
+            });
+            const plane = new THREE.Mesh(planeGeom, planeMat);
+            
+            // Позиционируем в центре ячейки, немного наружу
+            plane.position.set(
+                cell.cx + nx * offset,
+                cell.cy + ny * offset,
+                cell.cz
+            );
+            
+            // Поворачиваем по нормали
+            plane.lookAt(
+                cell.cx + nx * (offset + 1),
+                cell.cy + ny * (offset + 1),
+                cell.cz
+            );
+            
+            this.cellSelectionGroup.add(plane);
+        }
+    }
+    
+    /**
+     * Очистить визуализацию выделения ячеек
+     */
+    _clearCellSelectionVisuals() {
+        if (!this.cellSelectionGroup) return;
+        
+        while (this.cellSelectionGroup.children.length > 0) {
+            const obj = this.cellSelectionGroup.children[0];
+            if (obj.geometry) obj.geometry.dispose();
+            if (obj.material) obj.material.dispose();
+            this.cellSelectionGroup.remove(obj);
+        }
+    }
+    
+    // ==================== Окна и балконы ====================
+    
+    /**
+     * Добавить окно к выбранным ячейкам
+     */
+    _addWindowToSelected() {
+        if (!this.featuresManager || this.selectedCells.size === 0) return;
+        
+        for (const cellKey of this.selectedCells) {
+            const cell = this.cells.find(c => c.key === cellKey);
+            if (cell && cell.cellHeight >= 2.5) {  // Только для ячеек >= 2.5м
+                this.featuresManager.addWindow(cell);
+            }
+        }
+        
+        this._saveCellFeatures();
+        this._rebuildInsolationGrid();
+        this._updatePanel();
+    }
+    
+    /**
+     * Добавить балкон к выбранным ячейкам
+     */
+    _addBalconyToSelected() {
+        if (!this.featuresManager || this.selectedCells.size === 0) return;
+        
+        for (const cellKey of this.selectedCells) {
+            const cell = this.cells.find(c => c.key === cellKey);
+            if (cell) {
+                this.featuresManager.addBalcony(cell);
+            }
+        }
+        
+        this._saveCellFeatures();
+        this._updatePanel();
+    }
+    
+    /**
+     * Добавить окно и балкон к выбранным ячейкам
+     */
+    _addBothToSelected() {
+        if (!this.featuresManager || this.selectedCells.size === 0) return;
+        
+        for (const cellKey of this.selectedCells) {
+            const cell = this.cells.find(c => c.key === cellKey);
+            if (cell && cell.cellHeight >= 2.5) {
+                this.featuresManager.addWindowAndBalcony(cell);
+            }
+        }
+        
+        this._saveCellFeatures();
+        this._rebuildInsolationGrid();
+        this._updatePanel();
+    }
+    
+    /**
+     * Удалить всё из выбранных ячеек
+     */
+    _removeAllFromSelected() {
+        if (!this.featuresManager || this.selectedCells.size === 0) return;
+        
+        for (const cellKey of this.selectedCells) {
+            this.featuresManager.removeAll(cellKey);
+        }
+        
+        this._saveCellFeatures();
+        this._rebuildInsolationGrid();
+        this._updatePanel();
+    }
+    
+    /**
+     * Сохранить данные окон/балконов в mesh.userData
+     */
+    _saveCellFeatures() {
+        if (!this.featuresManager || !this.activeMesh) return;
+        this.activeMesh.userData.cellFeatures = this.featuresManager.toJSON();
+    }
+    
+    /**
+     * Пересоздать инсоляционную сетку (для обновления позиций расчётных точек)
+     */
+    _rebuildInsolationGrid() {
+        // Перестраиваем сетку чтобы обновить позиции расчётных точек
+        // (с учётом окон)
+        this._buildCells();
+        this.featuresManager.rebuildAllMeshes(this.cells);
+        
+        // TODO: обновить позиции расчётных точек в InsolationGrid
+        // с учётом окон (смещение к плоскости стекла)
+    }
+    
+    /**
+     * Получить статистику по окнам и балконам
+     */
+    _getFeatureStats() {
+        if (!this.featuresManager) return { windows: 0, balconies: 0 };
+        
+        let windows = 0, balconies = 0;
+        for (const [, features] of this.featuresManager.cellFeatures) {
+            if (features.window) windows++;
+            if (features.balcony) balconies++;
+        }
+        return { windows, balconies };
     }
     
     // ==================== Drag ====================
@@ -1511,9 +1992,6 @@ class GridEditMode {
                     prevFacade.end.y = facade.start.y;
                     
                     // Пересчитываем edgeLength
-                    const oldPrevLength = prevFacade.edgeLength;
-                    const oldFacadeLength = facade.edgeLength;
-                    
                     prevFacade.edgeLength = Math.hypot(
                         prevFacade.end.x - prevFacade.start.x,
                         prevFacade.end.y - prevFacade.start.y
@@ -1523,9 +2001,9 @@ class GridEditMode {
                         facade.end.y - facade.start.y
                     );
                     
-                    // Масштабируем вертикальные линии ПРОПОРЦИОНАЛЬНО (не пересоздаём!)
-                    this._scaleVerticalLines(prevFacade, oldPrevLength);
-                    this._scaleVerticalLines(facade, oldFacadeLength);
+                    // Полностью пересчитываем вертикальные линии в диапазоне 3.0-3.3м
+                    this._recalculateVerticalLines(prevFacade);
+                    this._recalculateVerticalLines(facade);
                     
                     // Обновляем геометрию mesh
                     this._updateMeshGeometryFromCustomGrid();
@@ -1614,6 +2092,22 @@ class GridEditMode {
         this._buildEdges();
         this._buildCells();
         
+        // Валидация selectedCells - удаляем ключи которых нет в новых cells
+        const validKeys = new Set(this.cells.map(c => c.key));
+        for (const key of this.selectedCells) {
+            if (!validKeys.has(key)) {
+                this.selectedCells.delete(key);
+            }
+        }
+        
+        // Обновляем визуализацию выделения ячеек с новыми координатами
+        this._updateCellSelectionVisuals();
+        
+        // Обновляем меши окон/балконов
+        if (this.featuresManager) {
+            this.featuresManager.rebuildAllMeshes(this.cells);
+        }
+        
         if (savedType !== undefined) {
             let newEdge = null;
             
@@ -1677,6 +2171,27 @@ class GridEditMode {
                     <div><kbd>Shift</kbd> +/- выделение</div>
                     <div><kbd>Ctrl</kbd> ряд / <kbd>Alt</kbd> столбец</div>
                 </div>
+                <div class="gep-features" id="gep-features" style="display:none">
+                    <div class="gep-features-title">🪟 Окна и балконы</div>
+                    <div class="gep-feature-buttons">
+                        <button id="gep-add-window" disabled>+ Окно</button>
+                        <button id="gep-add-balcony" disabled>+ Балкон</button>
+                    </div>
+                    <div class="gep-feature-buttons">
+                        <button id="gep-add-both" disabled>+ Оба</button>
+                        <button id="gep-remove-all" disabled>Удалить</button>
+                    </div>
+                    <div class="gep-feature-slider">
+                        <label>Глубина окна:</label>
+                        <input type="range" id="gep-window-depth" min="0.1" max="0.5" value="0.25" step="0.05">
+                        <span id="gep-window-depth-val">0.25м</span>
+                    </div>
+                    <div class="gep-feature-slider">
+                        <label>Вынос балкона:</label>
+                        <input type="range" id="gep-balcony-depth" min="0.6" max="2.0" value="1.2" step="0.1">
+                        <span id="gep-balcony-depth-val">1.2м</span>
+                    </div>
+                </div>
                 <div class="gep-stats" id="gep-stats"></div>
             </div>
         `;
@@ -1685,7 +2200,7 @@ class GridEditMode {
         style.id = 'gep-styles';
         style.textContent = `
             #grid-edit-panel {
-                position: fixed; top: 100px; right: 20px; width: 200px;
+                position: fixed; top: 100px; right: 20px; width: 220px;
                 background: #16213e; border-radius: 8px; color: #eee;
                 font: 12px -apple-system, sans-serif; z-index: 10000; user-select: none;
                 box-shadow: 0 4px 20px rgba(0,0,0,0.4);
@@ -1717,6 +2232,25 @@ class GridEditMode {
                 background: #1a5490; padding: 1px 4px; border-radius: 3px;
                 font-family: monospace; font-size: 10px;
             }
+            .gep-features {
+                background: rgba(0, 136, 255, 0.15); border-radius: 4px; 
+                padding: 8px; margin-bottom: 8px; border: 1px solid rgba(0, 136, 255, 0.3);
+            }
+            .gep-features-title { color: #0088ff; font-size: 11px; margin-bottom: 6px; font-weight: 500; }
+            .gep-feature-buttons { display: flex; gap: 4px; margin-bottom: 6px; }
+            .gep-feature-buttons button {
+                flex: 1; padding: 5px 8px; border: none; border-radius: 3px;
+                background: #0088ff; color: #fff; cursor: pointer; font-size: 10px;
+            }
+            .gep-feature-buttons button:hover { background: #00aaff; }
+            .gep-feature-buttons button:disabled { background: #444; cursor: not-allowed; opacity: 0.5; }
+            .gep-feature-buttons button:nth-child(2) { background: #ff9500; }
+            .gep-feature-buttons button:nth-child(2):hover { background: #ffaa33; }
+            .gep-feature-buttons button:nth-child(2):disabled { background: #444; }
+            .gep-feature-slider { margin-top: 6px; }
+            .gep-feature-slider label { display: block; font-size: 10px; color: #888; margin-bottom: 2px; }
+            .gep-feature-slider input { width: 120px; vertical-align: middle; }
+            .gep-feature-slider span { font-size: 10px; color: #0088ff; margin-left: 4px; }
             .gep-stats { font: 10px monospace; color: #7f8c8d; line-height: 1.4; }
         `;
         document.head.appendChild(style);
@@ -1727,7 +2261,59 @@ class GridEditMode {
         document.getElementById('gep-edges').onclick = () => this._setMode('edges');
         document.getElementById('gep-cells').onclick = () => this._setMode('cells');
         
+        // Обработчики кнопок окон/балконов
+        document.getElementById('gep-add-window').onclick = () => this._addWindowToSelected();
+        document.getElementById('gep-add-balcony').onclick = () => this._addBalconyToSelected();
+        document.getElementById('gep-add-both').onclick = () => this._addBothToSelected();
+        document.getElementById('gep-remove-all').onclick = () => this._removeAllFromSelected();
+        
+        // Слайдеры глубины
+        document.getElementById('gep-window-depth').oninput = (e) => {
+            const depth = parseFloat(e.target.value);
+            document.getElementById('gep-window-depth-val').textContent = depth.toFixed(2) + 'м';
+            console.log('[GridEditMode] Window depth slider:', depth, 'cells:', this.cells.length, 'features:', this.featuresManager?.cellFeatures.size);
+            if (this.featuresManager) {
+                this.featuresManager.defaults.windowDepth = depth;
+                // Обновляем выбранные или все окна
+                const targetCells = this.selectedCells.size > 0 ? this.selectedCells : 
+                    new Set([...this.featuresManager.cellFeatures.keys()]);
+                console.log('[GridEditMode] Updating', targetCells.size, 'cells');
+                for (const cellKey of targetCells) {
+                    const features = this.featuresManager.cellFeatures.get(cellKey);
+                    if (features && features.window) {
+                        features.window.depth = depth;
+                    }
+                }
+                this.featuresManager.rebuildAllMeshes(this.cells);
+                this._saveCellFeatures();
+            }
+        };
+        
+        document.getElementById('gep-balcony-depth').oninput = (e) => {
+            const depth = parseFloat(e.target.value);
+            document.getElementById('gep-balcony-depth-val').textContent = depth.toFixed(1) + 'м';
+            console.log('[GridEditMode] Balcony depth slider:', depth, 'cells:', this.cells.length, 'features:', this.featuresManager?.cellFeatures.size);
+            if (this.featuresManager) {
+                this.featuresManager.defaults.balconyDepth = depth;
+                // Обновляем выбранные или все балконы
+                const targetCells = this.selectedCells.size > 0 ? this.selectedCells : 
+                    new Set([...this.featuresManager.cellFeatures.keys()]);
+                console.log('[GridEditMode] Updating', targetCells.size, 'cells');
+                for (const cellKey of targetCells) {
+                    const features = this.featuresManager.cellFeatures.get(cellKey);
+                    if (features && features.balcony) {
+                        features.balcony.depth = depth;
+                    }
+                }
+                this.featuresManager.rebuildAllMeshes(this.cells);
+                this._saveCellFeatures();
+            }
+        };
+        
         this._updatePanel();
+        
+        // Принудительно устанавливаем режим 'edges' как начальный
+        this._setMode('edges');
     }
     
     _removePanel() {
@@ -1760,11 +2346,13 @@ class GridEditMode {
         this.selectedEdge = null;
         this.selectedCells.clear();
         this._restoreAllMaterials();
+        this._clearCellSelectionVisuals();  // Очищаем подсветку ячеек
         
         document.getElementById('gep-edges').classList.toggle('active', mode === 'edges');
         document.getElementById('gep-cells').classList.toggle('active', mode === 'cells');
         document.getElementById('gep-info-edges').style.display = mode === 'edges' ? 'block' : 'none';
         document.getElementById('gep-info-cells').style.display = mode === 'cells' ? 'block' : 'none';
+        document.getElementById('gep-features').style.display = mode === 'cells' ? 'block' : 'none';
         
         this._updatePanel();
     }
@@ -1778,6 +2366,13 @@ class GridEditMode {
         if (this.editMode === 'cells') {
             modeEl.textContent = `Ячейки (${this.selectedCells.size})`;
             modeEl.className = 'gep-mode cells';
+            
+            // Обновляем кнопки features
+            const hasSelection = this.selectedCells.size > 0;
+            document.getElementById('gep-add-window').disabled = !hasSelection;
+            document.getElementById('gep-add-balcony').disabled = !hasSelection;
+            document.getElementById('gep-add-both').disabled = !hasSelection;
+            document.getElementById('gep-remove-all').disabled = !hasSelection;
         } else if (this.isDragging) {
             modeEl.textContent = 'Перемещение...';
             modeEl.className = 'gep-mode dragging';
@@ -1798,10 +2393,22 @@ class GridEditMode {
             modeEl.className = 'gep-mode';
         }
         
+        // Статистика
         const totalFacades = this.activeMesh?.userData.customGrid?.facades.filter(f => f).length || 0;
         const cornerCount = this.edges.filter(e => e.type === 'corner').length;
-        statsEl.textContent = `Фасадов: ${this.visibleFaces.size}/${totalFacades}\nРёбер: ${this.edges.length} (углов: ${cornerCount})\nЯчеек: ${this.cells.length}`;
+        const featureStats = this._getFeatureStats();
+        
+        let stats = `Фасадов: ${this.visibleFaces.size}/${totalFacades}\n`;
+        stats += `Рёбер: ${this.edges.length} (углов: ${cornerCount})\n`;
+        stats += `Ячеек: ${this.cells.length}`;
+        
+        if (featureStats.windows > 0 || featureStats.balconies > 0) {
+            stats += `\nОкон: ${featureStats.windows} | Балконов: ${featureStats.balconies}`;
+        }
+        
+        statsEl.textContent = stats;
     }
 }
 
 export { GridEditMode };
+window.GridEditMode = GridEditMode;

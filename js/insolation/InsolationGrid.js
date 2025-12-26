@@ -126,6 +126,22 @@ class InsolationGrid {
         
         console.log(`[InsolationGrid] Здание ${meshIndex + 1}: ${mesh.userData.id}, высота: ${height}м`);
         
+        // Вычисляем signed area для определения направления обхода
+        let signedArea = 0;
+        for (let i = 0; i < localPoints.length; i++) {
+            const j = (i + 1) % localPoints.length;
+            signedArea += localPoints[i].x * localPoints[j].y;
+            signedArea -= localPoints[j].x * localPoints[i].y;
+        }
+        signedArea /= 2;
+        
+        // Если CCW (signedArea > 0), нужно инвертировать нормали
+        const needFlipNormals = signedArea > 0;
+        
+        // Вычисляем центр масс полигона (для совместимости)
+        const centerX = localPoints.reduce((s, v) => s + v.x, 0) / localPoints.length;
+        const centerY = localPoints.reduce((s, v) => s + v.y, 0) / localPoints.length;
+        
         // Создаём группу для этого здания
         const meshGroup = {
             pointIndices: [],
@@ -135,12 +151,66 @@ class InsolationGrid {
             height: height
         };
         
+        // Создаём customGrid для совместимости с CellFeaturesManager
+        const facades = [];
+        
         // Для каждого ребра (фасада)
         for (let i = 0; i < localPoints.length; i++) {
             const p1 = localPoints[i];
             const p2 = localPoints[(i + 1) % localPoints.length];
             
-            this._createFacadeGrid(p1, p2, height, levels, i, mesh, meshIndex, meshGroup);
+            // Вычисляем параметры фасада для customGrid
+            const edgeVec = new THREE.Vector2(p2.x - p1.x, p2.y - p1.y);
+            const edgeLength = edgeVec.length();
+            
+            if (edgeLength >= 1) {
+                // Количество сегментов
+                let horizontalSegments = Math.max(1, Math.round(edgeLength / this.horizontalStep));
+                let actualStep = edgeLength / horizontalSegments;
+                
+                if (actualStep > this.horizontalMaxStep) {
+                    horizontalSegments = Math.ceil(edgeLength / this.horizontalMaxStep);
+                }
+                
+                // Вертикальные линии (позиции вдоль ребра)
+                const verticalLines = [];
+                for (let h = 0; h <= horizontalSegments; h++) {
+                    const t = h / horizontalSegments;
+                    verticalLines.push(t * edgeLength);
+                }
+                
+                // Горизонтальные линии (высоты)
+                const horizontalLines = [];
+                for (let v = 0; v <= levels; v++) {
+                    const z = v * this.verticalStep;
+                    if (z <= height) horizontalLines.push(z);
+                }
+                if (horizontalLines[horizontalLines.length - 1] < height) {
+                    horizontalLines.push(height);
+                }
+                
+                facades.push({
+                    start: { x: p1.x, y: p1.y },
+                    end: { x: p2.x, y: p2.y },
+                    edgeLength,
+                    verticalLines,
+                    horizontalLines
+                });
+            } else {
+                facades.push(null);
+            }
+            
+            this._createFacadeGrid(p1, p2, height, levels, i, mesh, meshIndex, meshGroup, centerX, centerY, needFlipNormals);
+        }
+        
+        // Сохраняем customGrid для использования CellFeaturesManager
+        mesh.userData.customGrid = { facades };
+        console.log(`[InsolationGrid] Created customGrid with ${facades.filter(f => f).length} facades`);
+        if (facades.length > 0 && facades[0]) {
+            console.log('[InsolationGrid] Sample facade:', 
+                'verticalLines:', facades[0].verticalLines?.length,
+                'horizontalLines:', facades[0].horizontalLines?.length,
+                'edgeLength:', facades[0].edgeLength?.toFixed(2));
         }
         
         this.meshGroups.set(mesh, meshGroup);
@@ -152,7 +222,7 @@ class InsolationGrid {
     /**
      * Создать сетку для одного фасада (в локальных координатах)
      */
-    _createFacadeGrid(p1, p2, height, levels, facadeIndex, mesh, meshIndex, meshGroup) {
+    _createFacadeGrid(p1, p2, height, levels, facadeIndex, mesh, meshIndex, meshGroup, centerX, centerY, needFlipNormals = false) {
         const edgeVec = new THREE.Vector2(p2.x - p1.x, p2.y - p1.y);
         const edgeLength = edgeVec.length();
         
@@ -160,9 +230,16 @@ class InsolationGrid {
         
         const edgeDir = edgeVec.clone().normalize();
         
-        // Нормаль к фасаду (наружу) в локальных координатах
-        const normalX = -edgeDir.y;
-        const normalY = edgeDir.x;
+        // Нормаль - перпендикуляр к направлению фасада
+        // Поворот на 90° против часовой: (x, y) -> (-y, x)
+        let normalX = -edgeDir.y;
+        let normalY = edgeDir.x;
+        
+        // Инвертируем если полигон по часовой стрелке
+        if (needFlipNormals) {
+            normalX = -normalX;
+            normalY = -normalY;
+        }
         
         // Количество сегментов
         let horizontalSegments = Math.max(1, Math.round(edgeLength / this.horizontalStep));
@@ -710,6 +787,18 @@ class InsolationGrid {
         
         const height = mesh.userData.properties?.height || 9;
         
+        // Вычисляем центр масс полигона в локальных координатах
+        const vertices = [];
+        for (const facade of customGrid.facades) {
+            if (facade) vertices.push({ x: facade.start.x, y: facade.start.y });
+        }
+        
+        let centerX = 0, centerY = 0;
+        if (vertices.length >= 3) {
+            centerX = vertices.reduce((s, v) => s + v.x, 0) / vertices.length;
+            centerY = vertices.reduce((s, v) => s + v.y, 0) / vertices.length;
+        }
+        
         const meshGroup = {
             pointIndices: [],
             lineObjects: [],
@@ -728,9 +817,22 @@ class InsolationGrid {
             const dirX = (end.x - start.x) / edgeLength;
             const dirY = (end.y - start.y) / edgeLength;
             
-            // Нормаль наружу
-            const normalX = -dirY;
-            const normalY = dirX;
+            // Два варианта нормали
+            let normalX = -dirY;
+            let normalY = dirX;
+            
+            // Проверяем направлена ли нормаль наружу (от центра здания)
+            const facadeMidX = (start.x + end.x) / 2;
+            const facadeMidY = (start.y + end.y) / 2;
+            const toCenterX = centerX - facadeMidX;
+            const toCenterY = centerY - facadeMidY;
+            
+            // Если dot product > 0, нормаль направлена к центру - инвертируем
+            const dot = normalX * toCenterX + normalY * toCenterY;
+            if (dot > 0) {
+                normalX = -normalX;
+                normalY = -normalY;
+            }
             
             // Вертикальные линии сетки
             for (let vi = 0; vi < verticalLines.length; vi++) {
@@ -800,6 +902,9 @@ class InsolationGrid {
             // Только для ячеек высотой >= minCellHeight
             let pointsCreated = 0;
             
+            // Получаем cellFeatures если есть
+            const cellFeatures = mesh.userData.cellFeatures || {};
+            
             for (let hi = 0; hi < horizontalLines.length - 1; hi++) {
                 const cellHeight = horizontalLines[hi + 1] - horizontalLines[hi];
                 if (cellHeight < this.minCellHeight) continue;  // Пропускаем низкие ячейки
@@ -809,8 +914,20 @@ class InsolationGrid {
                 for (let vi = 0; vi < verticalLines.length - 1; vi++) {
                     const t = (verticalLines[vi] + verticalLines[vi + 1]) / 2;
                     
-                    const localX = start.x + dirX * t + normalX * this.offset;
-                    const localY = start.y + dirY * t + normalY * this.offset;
+                    // Проверяем есть ли окно в этой ячейке
+                    const cellKey = `${fi}-${vi}-${hi}`;
+                    const features = cellFeatures[cellKey];
+                    
+                    // Смещение точки от стены
+                    let pointOffset = this.offset;  // стандартное смещение наружу
+                    if (features && features.window) {
+                        // Для окна точка на уровне стекла (стекло на уровне стены)
+                        // Минимальное смещение наружу чтобы точка не была внутри стены
+                        pointOffset = 0.02;  // 2 см от стены
+                    }
+                    
+                    const localX = start.x + dirX * t + normalX * pointOffset;
+                    const localY = start.y + dirY * t + normalY * pointOffset;
                     
                     const pointGeometry = new THREE.SphereGeometry(this.pointSize, 12, 12);
                     const pointMesh = new THREE.Mesh(pointGeometry, this.pointMaterial.clone());
@@ -818,7 +935,8 @@ class InsolationGrid {
                     const pointIndex = this.calculationPoints.length;
                     pointMesh.userData = { 
                         type: 'insolation-point',
-                        index: pointIndex 
+                        index: pointIndex,
+                        hasWindow: !!(features && features.window)
                     };
                     this.pointsGroup.add(pointMesh);
                     
@@ -844,7 +962,9 @@ class InsolationGrid {
                         result: null,
                         buildingMesh: mesh,
                         buildingIndex: meshIndex,
-                        buildingId: mesh.userData.id
+                        buildingId: mesh.userData.id,
+                        hasWindow: !!(features && features.window),
+                        cellKey: cellKey
                     });
                     
                     pointsCreated++;

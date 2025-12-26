@@ -954,3 +954,63 @@ button:disabled {
 }
 
 
+
+/* ============================================
+   Grid Features Select
+   ============================================ */
+
+#grid-features-select {
+    padding: 6px 10px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    background: var(--bg-card);
+    color: var(--text);
+    font-size: 13px;
+    cursor: pointer;
+}
+
+#grid-features-select:hover {
+    border-color: var(--accent);
+}
+
+#grid-features-select.hidden {
+    display: none;
+}
+
+
+/* ============================================
+   Grid Depth Controls
+   ============================================ */
+
+#grid-depth-controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 8px;
+    background: rgba(0, 0, 0, 0.05);
+    border-radius: var(--radius-sm);
+    margin-top: 4px;
+}
+
+#grid-depth-controls.hidden {
+    display: none;
+}
+
+#grid-depth-controls label {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+#grid-depth-controls input[type="range"] {
+    width: 80px;
+    cursor: pointer;
+}
+
+#grid-depth-controls span {
+    font-size: 11px;
+    color: var(--accent);
+    min-width: 40px;
+}

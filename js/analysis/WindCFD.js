@@ -54,19 +54,22 @@ class WindCFD {
         this.activeDirection = null; // Текущее отображаемое направление
         
         // Настройки CFD (COST 732 / AIJ Guidelines)
+        // Эти значения отправляются на сервер и перезаписывают серверные дефолты
         this.domainSettings = {
-            // Домен
-            inletFactor: 3,      // 3H до inlet
-            outletFactor: 6,     // 6H до outlet
-            lateralFactor: 2.5,  // 2.5H по бокам
+            // Домен (множители от H - высоты самого высокого здания)
+            // COST 732: inlet 5H, outlet 10-15H, lateral 5H, height 5-6H
+            // Меньшие значения (inlet 3, outlet 6) = быстрее, но менее точный wake
+            inletFactor: 5,      // 5H до inlet (COST 732 стандарт, min 3)
+            outletFactor: 8,     // 8H до outlet (компромисс, идеал 10-15H, min 6)
+            lateralFactor: 2.5,  // 2.5H по бокам (можно 5H для точности)
             heightFactor: 5,     // 5H высота домена
             // Сетка
             cellSize: 5,         // Размер базовой ячейки (м)
-            refinementMin: 1,    // Мин. уровень рафинирования у зданий
-            refinementMax: 2,    // Макс. уровень рафинирования
+            refinementMin: 1,    // Мин. уровень рафинирования (0-3)
+            refinementMax: 2,    // Макс. уровень (1-4), каждый /2
             maxCells: 3,         // Макс. ячеек (миллионы)
             // Расчёт
-            iterations: 400      // Количество итераций
+            iterations: 400      // Итерации SIMPLE 
         };
         
         // Модель турбулентности
@@ -232,11 +235,11 @@ class WindCFD {
                         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 5px; margin-top: 5px;">
                             <div>
                                 <span style="font-size: 11px;" title="Расстояние от зданий до входной границы (откуда дует ветер). Рекомендуется 3-5H.">Inlet:</span>
-                                <input type="number" id="wcfd-inlet-factor" value="3" min="2" max="5" step="0.5" style="width: 100%;">
+                                <input type="number" id="wcfd-inlet-factor" value="5" min="2" max="10" step="0.5" style="width: 100%;">
                             </div>
                             <div>
                                 <span style="font-size: 11px;" title="Расстояние до выходной границы (за зданиями). Важно для wake-зоны. Рекомендуется 6-15H.">Outlet:</span>
-                                <input type="number" id="wcfd-outlet-factor" value="6" min="5" max="15" step="1" style="width: 100%;">
+                                <input type="number" id="wcfd-outlet-factor" value="8" min="5" max="20" step="1" style="width: 100%;">
                             </div>
                             <div>
                                 <span style="font-size: 11px;" title="Расстояние по бокам от зданий. Рекомендуется 2-5H.">Lateral:</span>
@@ -295,19 +298,24 @@ class WindCFD {
                         <label>Настройки анимации <span class="wcfd-help" title="Анимированные частицы, движущиеся по векторному полю скоростей.">?</span></label>
                         <div style="margin-top: 8px;">
                             <div style="display: flex; align-items: center; margin-bottom: 8px;">
-                                <span style="font-size: 11px; width: 80px;" title="Количество частиц в анимации.">Частицы:</span>
-                                <input type="range" id="wcfd-flow-particles" min="100" max="2000" step="100" value="500" style="flex: 1;">
-                                <span id="wcfd-flow-particles-val" style="width: 40px; text-align: right; font-size: 11px;">500</span>
+                                <span style="font-size: 11px; width: 80px;" title="Количество частиц. Больше = плотнее поток, но тяжелее для GPU.">Частицы:</span>
+                                <input type="range" id="wcfd-flow-particles" min="100" max="10000" step="100" value="800" style="flex: 1;">
+                                <span id="wcfd-flow-particles-val" style="width: 50px; text-align: right; font-size: 11px;">800</span>
                             </div>
                             <div style="display: flex; align-items: center; margin-bottom: 8px;">
-                                <span style="font-size: 11px; width: 80px;" title="Множитель скорости. 1x = реальная скорость ветра, 10x = в 10 раз быстрее.">Скорость:</span>
+                                <span style="font-size: 11px; width: 80px;" title="Множитель скорости. 1x = реальная скорость ветра.">Скорость:</span>
                                 <input type="range" id="wcfd-flow-speed" min="1" max="20" step="1" value="5" style="flex: 1;">
-                                <span id="wcfd-flow-speed-val" style="width: 40px; text-align: right; font-size: 11px;">5x</span>
+                                <span id="wcfd-flow-speed-val" style="width: 50px; text-align: right; font-size: 11px;">5x</span>
                             </div>
                             <div style="display: flex; align-items: center; margin-bottom: 8px;">
-                                <span style="font-size: 11px; width: 80px;" title="Длина следа за каждой частицей.">Длина следа:</span>
-                                <input type="range" id="wcfd-flow-trail" min="10" max="150" step="10" value="30" style="flex: 1;">
-                                <span id="wcfd-flow-trail-val" style="width: 40px; text-align: right; font-size: 11px;">30</span>
+                                <span style="font-size: 11px; width: 80px;" title="Длина следа (хвоста) за каждой частицей.">Длина следа:</span>
+                                <input type="range" id="wcfd-flow-trail" min="10" max="500" step="10" value="50" style="flex: 1;">
+                                <span id="wcfd-flow-trail-val" style="width: 50px; text-align: right; font-size: 11px;">50</span>
+                            </div>
+                            <div style="display: flex; align-items: center; margin-bottom: 8px;">
+                                <span style="font-size: 11px; width: 80px;" title="Время жизни частицы в секундах. Дольше = длиннее траектории.">Время жизни:</span>
+                                <input type="range" id="wcfd-flow-lifetime" min="2" max="60" step="1" value="10" style="flex: 1;">
+                                <span id="wcfd-flow-lifetime-val" style="width: 50px; text-align: right; font-size: 11px;">10 сек</span>
                             </div>
                             <div style="display: flex; align-items: center;">
                                 <input type="checkbox" id="wcfd-flow-color-speed" checked style="margin-right: 8px;">
@@ -847,6 +855,9 @@ class WindCFD {
         document.getElementById('wcfd-flow-trail').oninput = (e) => {
             document.getElementById('wcfd-flow-trail-val').textContent = e.target.value;
         };
+        document.getElementById('wcfd-flow-lifetime').oninput = (e) => {
+            document.getElementById('wcfd-flow-lifetime-val').textContent = e.target.value + ' сек';
+        };
         document.getElementById('wcfd-toggle-flow').onclick = () => this.toggleFlowAnimation();
         // Остальные элементы (slice-slider, resample, etc.) привязываются в updateResultsSection
     }
@@ -897,9 +908,10 @@ class WindCFD {
         } else {
             // Читаем настройки из UI
             const settings = {
-                particleCount: parseInt(document.getElementById('wcfd-flow-particles').value) || 500,
+                particleCount: parseInt(document.getElementById('wcfd-flow-particles').value) || 800,
                 speedMultiplier: parseFloat(document.getElementById('wcfd-flow-speed').value) || 5.0,
-                fadeLength: parseInt(document.getElementById('wcfd-flow-trail').value) || 30,
+                fadeLength: parseInt(document.getElementById('wcfd-flow-trail').value) || 50,
+                particleLifetime: parseFloat(document.getElementById('wcfd-flow-lifetime').value) || 10.0,
                 colorBySpeed: document.getElementById('wcfd-flow-color-speed').checked
             };
             
@@ -927,8 +939,8 @@ class WindCFD {
     
     applyCFDSettings() {
         // Читаем значения из UI
-        this.domainSettings.inletFactor = parseFloat(document.getElementById('wcfd-inlet-factor').value) || 3;
-        this.domainSettings.outletFactor = parseFloat(document.getElementById('wcfd-outlet-factor').value) || 6;
+        this.domainSettings.inletFactor = parseFloat(document.getElementById('wcfd-inlet-factor').value) || 5;
+        this.domainSettings.outletFactor = parseFloat(document.getElementById('wcfd-outlet-factor').value) || 8;
         this.domainSettings.lateralFactor = parseFloat(document.getElementById('wcfd-lateral-factor').value) || 2.5;
         this.domainSettings.heightFactor = parseFloat(document.getElementById('wcfd-height-factor').value) || 5;
         this.domainSettings.cellSize = parseFloat(document.getElementById('wcfd-cell-size').value) || 5;

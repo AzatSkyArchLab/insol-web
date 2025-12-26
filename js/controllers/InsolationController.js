@@ -5,6 +5,8 @@
  * ============================================
  */
 
+import { CellFeaturesManager } from '../insolation/CellFeaturesManager.js';
+
 class InsolationController {
     /**
      * @param {App} app - главный класс приложения
@@ -41,6 +43,118 @@ class InsolationController {
         
         document.getElementById('toggle-all-rays-btn')
             .addEventListener('click', () => this.onToggleAllRaysClick());
+        
+        // Обработчик изменения типа элементов
+        document.getElementById('grid-features-select')
+            .addEventListener('change', (e) => this.onFeaturesSelectChange(e.target.value));
+        
+        // Слайдеры глубины
+        document.getElementById('grid-window-depth')
+            .addEventListener('input', (e) => this.onWindowDepthChange(parseFloat(e.target.value)));
+        
+        document.getElementById('grid-balcony-depth')
+            .addEventListener('input', (e) => this.onBalconyDepthChange(parseFloat(e.target.value)));
+    }
+    
+    /**
+     * Изменение глубины окон
+     */
+    onWindowDepthChange(depth) {
+        document.getElementById('grid-window-depth-val').textContent = depth.toFixed(2) + 'м';
+        this._windowDepth = depth;
+        this._updateAllFeaturesDepth();
+    }
+    
+    /**
+     * Изменение глубины балконов
+     */
+    onBalconyDepthChange(depth) {
+        document.getElementById('grid-balcony-depth-val').textContent = depth.toFixed(1) + 'м';
+        this._balconyDepth = depth;
+        this._updateAllFeaturesDepth();
+    }
+    
+    /**
+     * Обновить глубину всех окон/балконов
+     */
+    _updateAllFeaturesDepth() {
+        const { state } = this;
+        if (!state.insolationGrid) return;
+        
+        const activeMeshes = state.insolationGrid.getActiveMeshes();
+        if (activeMeshes.length === 0) return;
+        
+        for (const mesh of activeMeshes) {
+            const featuresManager = mesh.userData._featuresManager;
+            if (!featuresManager) continue;
+            
+            // Обновляем defaults
+            if (this._windowDepth !== undefined) {
+                featuresManager.defaults.windowDepth = this._windowDepth;
+            }
+            if (this._balconyDepth !== undefined) {
+                featuresManager.defaults.balconyDepth = this._balconyDepth;
+            }
+            
+            // Обновляем все features
+            for (const [cellKey, features] of featuresManager.cellFeatures) {
+                if (features.window && this._windowDepth !== undefined) {
+                    features.window.depth = this._windowDepth;
+                }
+                if (features.balcony && this._balconyDepth !== undefined) {
+                    features.balcony.depth = this._balconyDepth;
+                }
+            }
+            
+            // Перестраиваем меши
+            const cells = this._getCellsForMesh(mesh);
+            featuresManager.rebuildAllMeshes(cells);
+            
+            // Сохраняем
+            mesh.userData.cellFeatures = featuresManager.toJSON();
+        }
+        
+        // Сбрасываем кэш препятствий
+        if (state.insolationCalculator) {
+            state.insolationCalculator.invalidateObstaclesCache();
+        }
+    }
+    
+    /**
+     * Изменение типа элементов в ячейках
+     */
+    onFeaturesSelectChange(featureType) {
+        const { state } = this;
+        
+        console.log('[InsolationController] onFeaturesSelectChange:', featureType);
+        
+        // Показываем/скрываем контролы глубины
+        const depthControls = document.getElementById('grid-depth-controls');
+        if (featureType === 'none') {
+            depthControls.classList.add('hidden');
+        } else {
+            depthControls.classList.remove('hidden');
+        }
+        
+        if (!state.insolationGrid) {
+            console.log('[InsolationController] No insolationGrid');
+            return;
+        }
+        
+        const activeMeshes = state.insolationGrid.getActiveMeshes();
+        console.log('[InsolationController] Active meshes:', activeMeshes.length);
+        if (activeMeshes.length === 0) return;
+        
+        // Применяем элементы
+        this._applyFeaturesToAllMeshes(activeMeshes, featureType);
+        
+        // Сбрасываем кэш препятствий для пересчёта инсоляции
+        if (state.insolationCalculator) {
+            state.insolationCalculator.invalidateObstaclesCache();
+        }
+        
+        // НЕ пересоздаём сетку - customGrid уже существует
+        // state.insolationGrid.createGrid(activeMeshes);
     }
     
     /**
@@ -98,6 +212,7 @@ class InsolationController {
         const btn = document.getElementById('insolation-grid-btn');
         const selectAllBtn = document.getElementById('select-all-points-btn');
         const calcBtn = document.getElementById('calculate-insolation-btn');
+        const featuresSelect = document.getElementById('grid-features-select');
         
         const activeMeshes = state.insolationGrid.getActiveMeshes();
         const isSameSelection = activeMeshes.length === selectedMeshes.length &&
@@ -118,7 +233,212 @@ class InsolationController {
             btn.textContent = `Убрать сетку${buildingText}`;
             selectAllBtn.classList.remove('hidden');
             calcBtn.classList.remove('hidden');
+            featuresSelect.classList.remove('hidden');
+            
+            // Контролы глубины скрыты по умолчанию (select = 'none')
+            const depthControls = document.getElementById('grid-depth-controls');
+            depthControls.classList.add('hidden');
+            
+            // Применяем элементы согласно текущему выбору (по умолчанию 'none' - ничего не делаем)
+            const featureType = featuresSelect.value;
+            if (featureType !== 'none') {
+                depthControls.classList.remove('hidden');
+                this._applyFeaturesToAllMeshes(selectedMeshes, featureType);
+            }
         }
+    }
+    
+    /**
+     * Применить элементы ко всем ячейкам выбранных зданий
+     */
+    _applyFeaturesToAllMeshes(meshes, featureType) {
+        const { state } = this;
+        const scene = state.sceneManager?.scene;
+        
+        if (!scene) {
+            console.error('[InsolationController] No scene available');
+            return;
+        }
+        
+        console.log('[InsolationController] _applyFeaturesToAllMeshes:', featureType, 'meshes:', meshes.length);
+        console.log('[InsolationController] Scene:', scene?.type, 'uuid:', scene?.uuid?.slice(0,8), 'children:', scene?.children?.length);
+        
+        // Получаем текущие значения глубины из слайдеров
+        const windowDepthInput = document.getElementById('grid-window-depth');
+        const balconyDepthInput = document.getElementById('grid-balcony-depth');
+        const windowDepth = windowDepthInput ? parseFloat(windowDepthInput.value) : 0.25;
+        const balconyDepth = balconyDepthInput ? parseFloat(balconyDepthInput.value) : 1.2;
+        
+        for (const mesh of meshes) {
+            console.log('[InsolationController] Processing mesh:', mesh.name, 'customGrid:', !!mesh.userData.customGrid);
+            
+            // Получаем или создаём featuresManager для здания
+            let featuresManager = mesh.userData._featuresManager;
+            if (!featuresManager) {
+                featuresManager = new CellFeaturesManager(scene);
+                mesh.userData._featuresManager = featuresManager;
+                console.log('[InsolationController] Created new featuresManager');
+            }
+            
+            if (!featuresManager) {
+                console.log('[InsolationController] No featuresManager, skipping');
+                continue;
+            }
+            
+            // Устанавливаем defaults из слайдеров
+            featuresManager.defaults.windowDepth = windowDepth;
+            featuresManager.defaults.balconyDepth = balconyDepth;
+            
+            // Получаем ячейки для этого здания
+            const cells = this._getCellsForMesh(mesh);
+            console.log('[InsolationController] Cells for mesh:', cells.length);
+            if (!cells || cells.length === 0) {
+                console.log('[InsolationController] No cells, skipping');
+                continue;
+            }
+            
+            // Очищаем старые элементы
+            featuresManager.removeAllWindows();
+            featuresManager.removeAllBalconies();
+            
+            // Устанавливаем новые
+            if (featureType === 'windows') {
+                console.log('[InsolationController] Setting windows for', cells.length, 'cells');
+                featuresManager.setAllWindows(cells);
+            } else if (featureType === 'balconies') {
+                console.log('[InsolationController] Setting windows+balconies for', cells.length, 'cells');
+                featuresManager.setAllWindowsAndBalconies(cells);
+            }
+            // 'none' - ничего не делаем
+            
+            // Проверяем результат
+            console.log('[InsolationController] After apply: featuresGroup children:', 
+                featuresManager.featuresGroup.children.length,
+                'parent:', featuresManager.featuresGroup.parent?.type);
+            
+            if (featuresManager.featuresGroup.children.length > 0) {
+                const firstChild = featuresManager.featuresGroup.children[0];
+                console.log('[InsolationController] First child position:', 
+                    firstChild.position?.x?.toFixed(2), 
+                    firstChild.position?.y?.toFixed(2), 
+                    firstChild.position?.z?.toFixed(2));
+            }
+            
+            // Сохраняем в userData
+            mesh.userData.cellFeatures = featuresManager.toJSON();
+            console.log('[InsolationController] Saved cellFeatures:', Object.keys(mesh.userData.cellFeatures).length);
+        }
+    }
+    
+    /**
+     * Получить ячейки для здания
+     */
+    _getCellsForMesh(mesh) {
+        const customGrid = mesh.userData.customGrid;
+        console.log('[InsolationController] _getCellsForMesh: customGrid:', !!customGrid, 
+            'facades:', customGrid?.facades?.length);
+        if (!customGrid || !customGrid.facades) return [];
+        
+        const cells = [];
+        const pos = mesh.position;
+        const rot = mesh.rotation.z || 0;
+        const cos = Math.cos(rot);
+        const sin = Math.sin(rot);
+        
+        // Собираем вершины полигона
+        const vertices = [];
+        for (const facade of customGrid.facades) {
+            if (facade) vertices.push({ x: facade.start.x, y: facade.start.y });
+        }
+        
+        // Вычисляем signed area для определения направления обхода
+        // Положительная = против часовой стрелки (CCW), отрицательная = по часовой (CW)
+        let signedArea = 0;
+        for (let i = 0; i < vertices.length; i++) {
+            const j = (i + 1) % vertices.length;
+            signedArea += vertices[i].x * vertices[j].y;
+            signedArea -= vertices[j].x * vertices[i].y;
+        }
+        signedArea /= 2;
+        
+        // Если CCW (signedArea > 0), нормаль (-dirY, dirX) направлена внутрь - нужно инвертировать
+        // Если CW (signedArea < 0), нормаль (-dirY, dirX) направлена наружу
+        const needFlip = signedArea > 0;
+        
+        console.log('[InsolationController] Polygon signed area:', signedArea.toFixed(2), 
+            'winding:', signedArea > 0 ? 'CCW' : 'CW', 'needFlip:', needFlip);
+        
+        for (let fi = 0; fi < customGrid.facades.length; fi++) {
+            const facade = customGrid.facades[fi];
+            if (!facade) continue;
+            
+            const { start, end, verticalLines, horizontalLines, edgeLength } = facade;
+            if (edgeLength < 0.01) continue;  // Пропускаем вырожденные фасады
+            
+            const dirX = (end.x - start.x) / edgeLength;
+            const dirY = (end.y - start.y) / edgeLength;
+            
+            // Нормаль - перпендикуляр к направлению фасада
+            // Поворот на 90° против часовой: (x, y) -> (-y, x)
+            let localNx = -dirY;
+            let localNy = dirX;
+            
+            // Инвертируем если полигон по часовой стрелке
+            if (needFlip) {
+                localNx = -localNx;
+                localNy = -localNy;
+            }
+            
+            const worldNx = localNx * cos - localNy * sin;
+            const worldNy = localNx * sin + localNy * cos;
+            const worldDirX = dirX * cos - dirY * sin;
+            const worldDirY = dirX * sin + dirY * cos;
+            
+            for (let col = 0; col < verticalLines.length - 1; col++) {
+                for (let row = 0; row < horizontalLines.length - 1; row++) {
+                    const t1 = verticalLines[col];
+                    const t2 = verticalLines[col + 1];
+                    const z1 = horizontalLines[row];
+                    const z2 = horizontalLines[row + 1];
+                    
+                    const tCenter = (t1 + t2) / 2;
+                    const zCenter = (z1 + z2) / 2;
+                    
+                    const localCx = start.x + dirX * tCenter;
+                    const localCy = start.y + dirY * tCenter;
+                    const worldCx = localCx * cos - localCy * sin + pos.x;
+                    const worldCy = localCx * sin + localCy * cos + pos.y;
+                    
+                    // Центр нижней границы ячейки (для балконов)
+                    const localBottomCx = start.x + dirX * tCenter;
+                    const localBottomCy = start.y + dirY * tCenter;
+                    const bottomCenterX = localBottomCx * cos - localBottomCy * sin + pos.x;
+                    const bottomCenterY = localBottomCx * sin + localBottomCy * cos + pos.y;
+                    
+                    const cellWidth = t2 - t1;
+                    const cellHeight = z2 - z1;
+                    
+                    cells.push({
+                        key: `${fi}-${col}-${row}`,
+                        facadeIndex: fi,
+                        col, row,
+                        cx: worldCx, cy: worldCy, cz: zCenter,
+                        cellWidth, cellHeight,
+                        nx: worldNx, ny: worldNy,
+                        faceDirX: worldDirX, faceDirY: worldDirY,
+                        z1, z2,
+                        bottomCenterX, bottomCenterY
+                    });
+                }
+            }
+        }
+        
+        console.log('[InsolationController] _getCellsForMesh: created', cells.length, 'cells');
+        if (cells.length > 0) {
+            console.log('[InsolationController] Sample cell:', cells[0]);
+        }
+        
+        return cells;
     }
     
     /**
@@ -460,11 +780,15 @@ class InsolationController {
         const btn = document.getElementById('insolation-grid-btn');
         const selectAllBtn = document.getElementById('select-all-points-btn');
         const calcBtn = document.getElementById('calculate-insolation-btn');
+        const featuresSelect = document.getElementById('grid-features-select');
+        const depthControls = document.getElementById('grid-depth-controls');
         
         btn.classList.remove('active');
         btn.textContent = 'Инсоляционная сетка';
         selectAllBtn.classList.add('hidden');
         calcBtn.classList.add('hidden');
+        if (featuresSelect) featuresSelect.classList.add('hidden');
+        if (depthControls) depthControls.classList.add('hidden');
         
         this.hideResults();
         
@@ -485,6 +809,8 @@ class InsolationController {
         const btn = document.getElementById('insolation-grid-btn');
         const selectAllBtn = document.getElementById('select-all-points-btn');
         const calcBtn = document.getElementById('calculate-insolation-btn');
+        const featuresSelect = document.getElementById('grid-features-select');
+        const depthControls = document.getElementById('grid-depth-controls');
         
         if (btn) {
             btn.classList.remove('active');
@@ -492,6 +818,8 @@ class InsolationController {
         }
         if (selectAllBtn) selectAllBtn.classList.add('hidden');
         if (calcBtn) calcBtn.classList.add('hidden');
+        if (featuresSelect) featuresSelect.classList.add('hidden');
+        if (depthControls) depthControls.classList.add('hidden');
         
         this._resetRaysButtons();
         

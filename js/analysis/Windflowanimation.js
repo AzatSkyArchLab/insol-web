@@ -1,6 +1,6 @@
 /**
  * WindFlowAnimation.js - Анимация потоков ветра частицами
- * v1.0 - Particle-based flow visualization
+ * v1.1 - Extended parameters for large scenes
  * 
  * Использование:
  *   const animator = new WindFlowAnimation(sceneManager, windCFD);
@@ -14,14 +14,15 @@ class WindFlowAnimation {
         this.windCFD = windCFD;
         
         // Параметры анимации
+        // Дефолты оптимизированы для средних сцен, для больших сцен увеличьте через UI
         this.settings = {
-            particleCount: 500,      // Количество частиц
-            particleSize: 3,         // Размер частиц
-            speedMultiplier: 5.0,    // Множитель скорости (1.0 = реальная скорость)
-            fadeLength: 30,          // Длина "хвоста" (сколько позиций запоминать)
-            particleLifetime: 6.0,   // Время жизни частицы в СЕКУНДАХ
-            colorBySpeed: true,      // Цвет по скорости
-            trailOpacity: 0.6        // Прозрачность следа
+            particleCount: 800,       // Количество частиц (UI: 100-10000)
+            particleSize: 3,          // Размер частиц (пиксели)
+            speedMultiplier: 5.0,     // Множитель скорости (1.0 = реальная скорость)
+            fadeLength: 50,           // Длина "хвоста" (UI: 10-500)
+            particleLifetime: 10.0,   // Время жизни частицы в СЕКУНДАХ (UI: 2-60)
+            colorBySpeed: true,       // Цвет по скорости
+            trailOpacity: 0.6         // Прозрачность следа
         };
         
         // Состояние
@@ -56,7 +57,7 @@ class WindFlowAnimation {
         this.gridData = gridData;
         this.isRunning = true;
         
-        console.log('[WindFlow] Starting animation with', this.settings.particleCount, 'particles');
+        console.log('[WindFlow] Starting animation with', this.settings.particleCount, 'particles, lifetime:', this.settings.particleLifetime, 's');
         
         // Инициализируем частицы
         this.initParticles();
