@@ -5,6 +5,7 @@
  * Поддержка множественных направлений
  * Пакетный расчёт всех направлений
  * v2.1 - Стрелка направления + векторный режим
+ * v3.0 - Wind Comfort Analysis (Lawson / NEN 8100)
  * ============================================
  */
 
@@ -98,6 +99,37 @@ class WindCFD {
         
         // Высота сечения
         this.sliceHeight = 1.75; // метров (уровень пешехода)
+        
+        // ==================== Wind Comfort Analysis ====================
+        // Настройки анализа комфорта
+        this.comfortSettings = {
+            standard: 'lawson',  // 'lawson' | 'nen8100'
+            speedSource: 'gem',  // 'cfd' | 'gem' | 'p95' | 'max' - какую скорость использовать
+            showComfort: false   // Показывать ли overlay комфорта
+        };
+        
+        // Комфортный overlay
+        this.comfortOverlay = null;
+        this.comfortData = null;
+        
+        // Lawson LDDC Criteria (2001) - пороги для 5% превышения
+        this.lawsonCriteria = {
+            sitting_long:  { threshold: 2.5, color: [34, 139, 34],   label: 'A - Длит. сидение', desc: 'Парки, кафе' },
+            sitting_short: { threshold: 4.0, color: [144, 238, 144], label: 'B - Корот. сидение', desc: 'Скамейки' },
+            standing:      { threshold: 6.0, color: [255, 255, 0],   label: 'C - Стояние', desc: 'Остановки' },
+            walking:       { threshold: 8.0, color: [255, 165, 0],   label: 'D - Прогулка', desc: 'Тротуары' },
+            uncomfortable: { threshold: 10.0, color: [255, 0, 0],    label: 'E - Некомфортно', desc: 'Проходы' },
+            dangerous:     { threshold: Infinity, color: [139, 0, 0], label: 'S - Опасно', desc: 'Недопустимо' }
+        };
+        
+        // NEN 8100 (Dutch standard) - вероятность P(U > 5 м/с)
+        this.nen8100Criteria = {
+            A: { maxExceed: 2.5,  color: [34, 139, 34],   label: 'A - Отлично', desc: 'Длит. сидение' },
+            B: { maxExceed: 5.0,  color: [144, 238, 144], label: 'B - Хорошо', desc: 'Корот. сидение' },
+            C: { maxExceed: 10.0, color: [255, 255, 0],   label: 'C - Умеренно', desc: 'Прогулки' },
+            D: { maxExceed: 20.0, color: [255, 165, 0],   label: 'D - Плохо', desc: 'Только проходы' },
+            E: { maxExceed: Infinity, color: [255, 0, 0], label: 'E - Некомфортно', desc: 'Недопустимо' }
+        };
         
         // CFD Server URL
         this.serverUrl = 'http://localhost:8765';
@@ -1737,11 +1769,12 @@ class WindCFD {
                         this.batchCompleted++;
                         this.isCalculating = false;
                         
-                        // Обновляем розу ветров
+                        // Обновляем розу ветров (НЕ вызываем updateResultsSection!)
                         this.renderWindRose();
                         
-                        // Показываем результат
-                        this.showDirectionResult(sector.angle);
+                        // В batch mode НЕ показываем результат - только обновляем прогресс
+                        // showDirectionResult вызовет updateResultsSection и сломает batch UI
+                        this.updateBatchProgress(sector, '✅ Готово');
                         
                         console.log(`[WindCFD] ✅ ${sector.name} (${this.batchCompleted}/${this.batchTotal})`);
                         
@@ -1780,11 +1813,24 @@ class WindCFD {
         const completed = Object.values(this.results).filter(r => r && !r.cached).length;
         console.log(`[WindCFD] ✅ Пакетный расчёт завершён: ${completed}/8`);
         
-        this.updateResultsSection();
+        // Показываем последний рассчитанный результат
+        const calculatedAngles = Object.keys(this.results)
+            .map(k => parseInt(k))
+            .filter(angle => this.results[angle] && !this.results[angle].cached);
+        
+        if (calculatedAngles.length > 0) {
+            const lastAngle = calculatedAngles[calculatedAngles.length - 1];
+            this.showDirectionResult(lastAngle);
+        } else {
+            this.updateResultsSection();
+        }
+        
         this.updateCalculateButtons();
         
         if (completed === 8) {
-            alert('✅ Все 8 направлений рассчитаны!');
+            alert('✅ Все 8 направлений рассчитаны!\n\nТеперь можно запустить анализ ветрового комфорта.');
+        } else if (completed >= 4) {
+            alert(`✅ Рассчитано ${completed}/8 направлений.\n\nМинимум для анализа комфорта достигнут!`);
         }
     }
     
@@ -2120,6 +2166,10 @@ class WindCFD {
         
         section.classList.remove('wcfd-hidden');
         if (vectorSection) vectorSection.classList.remove('wcfd-hidden');
+        
+        // Проверяем достаточно ли направлений для анализа комфорта
+        const canAnalyzeComfort = count >= 4 && this.epwData?.sectors;
+        
         section.innerHTML = `
             <div class="wcfd-label">Результаты</div>
             <div class="wcfd-results-count">
@@ -2156,7 +2206,59 @@ class WindCFD {
                 <button class="wcfd-btn" id="wcfd-resample">🔄 Пересчитать срез</button>
             </div>
             <div class="wcfd-legend" id="wcfd-legend"></div>
-            <button class="wcfd-btn" id="wcfd-hide-results">Скрыть результаты</button>
+            
+            <!-- ==================== Wind Comfort Analysis ==================== -->
+            ${canAnalyzeComfort ? `
+            <div class="wcfd-comfort-section" style="margin-top: 12px; padding-top: 12px; border-top: 2px solid #4a90e2;">
+                <div class="wcfd-label" style="color: #4a90e2;">🌬️ Анализ ветрового комфорта</div>
+                
+                <div style="margin-bottom: 10px;">
+                    <label style="font-size: 12px; display: block; margin-bottom: 4px;">Стандарт:</label>
+                    <select id="wcfd-comfort-standard" style="width: 100%; padding: 6px; border-radius: 4px; border: 1px solid #ddd;">
+                        <option value="lawson" ${this.comfortSettings.standard === 'lawson' ? 'selected' : ''}>Lawson LDDC (UK)</option>
+                        <option value="nen8100" ${this.comfortSettings.standard === 'nen8100' ? 'selected' : ''}>NEN 8100 (NL)</option>
+                    </select>
+                </div>
+                
+                <div style="margin-bottom: 10px;">
+                    <label style="font-size: 12px; display: block; margin-bottom: 4px;">Скорость ветра для анализа:</label>
+                    <select id="wcfd-comfort-speed-source" style="width: 100%; padding: 6px; border-radius: 4px; border: 1px solid #ddd;">
+                        <option value="gem" ${this.comfortSettings.speedSource === 'gem' ? 'selected' : ''}>GEM (Mean×2.0) — рекомендуется</option>
+                        <option value="p95" ${this.comfortSettings.speedSource === 'p95' ? 'selected' : ''}>P95 из EPW (более строгий)</option>
+                        <option value="max" ${this.comfortSettings.speedSource === 'max' ? 'selected' : ''}>Максимум из EPW (очень строгий)</option>
+                        <option value="cfd" ${this.comfortSettings.speedSource === 'cfd' ? 'selected' : ''}>Прямо из CFD (debug)</option>
+                    </select>
+                </div>
+                
+                <div style="background: #f0f7ff; padding: 8px; border-radius: 6px; margin-bottom: 10px; font-size: 11px;">
+                    <div id="wcfd-comfort-info">
+                        <strong>Метод:</strong> K × V<sub>climate</sub><br>
+                        K = коэффициент усиления (из CFD)<br>
+                        V<sub>climate</sub> = P95 скорость (из EPW)<br>
+                        <strong>Используется:</strong> ${count} из 8 направлений
+                    </div>
+                </div>
+                
+                <button class="wcfd-btn wcfd-btn-primary" id="wcfd-calc-comfort" style="background: #2196F3;">
+                    📊 Рассчитать комфорт
+                </button>
+                
+                <div id="wcfd-comfort-legend" class="wcfd-hidden" style="margin-top: 10px;"></div>
+                
+                <button class="wcfd-btn wcfd-hidden" id="wcfd-hide-comfort" style="margin-top: 6px;">
+                    Скрыть комфорт
+                </button>
+                <button class="wcfd-btn wcfd-hidden" id="wcfd-export-comfort" style="margin-top: 6px;">
+                    📥 Экспорт комфорта
+                </button>
+            </div>
+            ` : count < 4 ? `
+            <div style="margin-top: 12px; padding: 10px; background: #fff3cd; border-radius: 6px; font-size: 12px;">
+                ⚠️ Для анализа комфорта нужно минимум 4 направления (сейчас: ${count})
+            </div>
+            ` : ''}
+            
+            <button class="wcfd-btn" id="wcfd-hide-results" style="margin-top: 10px;">Скрыть результаты</button>
             <button class="wcfd-btn" id="wcfd-export-results">Экспорт JSON</button>
             <button class="wcfd-btn" id="wcfd-download-paraview">📦 Paraview (${this.activeDirection !== null ? this.activeDirection + '°' : '—'})</button>
             <button class="wcfd-btn wcfd-btn-danger" id="wcfd-clear-all">Очистить все расчёты</button>
@@ -2195,6 +2297,79 @@ class WindCFD {
                 document.getElementById('wcfd-scale-value').textContent = `${this.vectorScale}x`;
                 this.updateVectorField();
             };
+        }
+        
+        // ==================== Comfort Analysis Events ====================
+        const comfortStandard = document.getElementById('wcfd-comfort-standard');
+        const comfortSpeedSource = document.getElementById('wcfd-comfort-speed-source');
+        const calcComfortBtn = document.getElementById('wcfd-calc-comfort');
+        const hideComfortBtn = document.getElementById('wcfd-hide-comfort');
+        const exportComfortBtn = document.getElementById('wcfd-export-comfort');
+        
+        if (comfortStandard) {
+            comfortStandard.onchange = (e) => {
+                this.comfortSettings.standard = e.target.value;
+                this.updateComfortInfo();
+            };
+        }
+        
+        if (comfortSpeedSource) {
+            comfortSpeedSource.onchange = (e) => {
+                this.comfortSettings.speedSource = e.target.value;
+                this.updateComfortInfo();
+            };
+        }
+        
+        if (calcComfortBtn) {
+            calcComfortBtn.onclick = () => this.calculateWindComfort();
+        }
+        
+        if (hideComfortBtn) {
+            hideComfortBtn.onclick = () => this.hideComfortOverlay();
+        }
+        
+        if (exportComfortBtn) {
+            exportComfortBtn.onclick = () => this.exportComfortData();
+        }
+    }
+    
+    // Обновление описания стандарта комфорта
+    updateComfortInfo() {
+        const info = document.getElementById('wcfd-comfort-info');
+        if (!info) return;
+        
+        const count = Object.values(this.results).filter(r => r && !r.cached).length;
+        
+        let speedDesc = '';
+        switch (this.comfortSettings.speedSource) {
+            case 'gem':
+                speedDesc = 'GEM = Mean × 2.0 (стандартный метод)';
+                break;
+            case 'p95':
+                speedDesc = 'P95 скорости из EPW (строгий)';
+                break;
+            case 'max':
+                speedDesc = 'Максимальные скорости из EPW (очень строгий)';
+                break;
+            case 'cfd':
+                speedDesc = 'Напрямую из CFD (только для отладки)';
+                break;
+        }
+        
+        if (this.comfortSettings.standard === 'lawson') {
+            info.innerHTML = `
+                <strong>Lawson LDDC:</strong> P(превышение) < 5%<br>
+                <strong>Скорость:</strong> ${speedDesc}<br>
+                <strong>Формула:</strong> V = K × V<sub>EPW</sub><br>
+                <strong>Используется:</strong> ${count} из 8 направлений
+            `;
+        } else {
+            info.innerHTML = `
+                <strong>NEN 8100:</strong> P(U > 5 м/с)<br>
+                <strong>Скорость:</strong> ${speedDesc}<br>
+                <strong>Формула:</strong> V = K × V<sub>EPW</sub><br>
+                <strong>Используется:</strong> ${count} из 8 направлений
+            `;
         }
     }
     
@@ -3002,9 +3177,464 @@ class WindCFD {
         return new Promise(resolve => setTimeout(resolve, ms));
     }
     
+    // ==================== Wind Comfort Analysis ====================
+    
+    /**
+     * Главный метод расчёта ветрового комфорта
+     * 
+     * МЕТОДОЛОГИЯ (Amplification Factor):
+     * 1. K = V_cfd / V_input — коэффициент усиления
+     * 2. V_real = K × V_climate — реальная скорость (P95 из EPW)
+     * 3. P(exceed) = Σ(freq × I(V_real > threshold))
+     * 
+     * Lawson LDDC: Категория = лучшая где P(exceed) < 5%
+     * NEN 8100: Категория по P(U > 5 м/с)
+     */
+    calculateWindComfort() {
+        console.log('[WindCFD] Calculating wind comfort with amplification factor method...');
+        
+        // Проверяем наличие данных
+        const validResults = Object.entries(this.results).filter(([_, r]) => r && r.data && r.data.grid);
+        if (validResults.length < 4) {
+            alert(`Недостаточно данных. Рассчитано ${validResults.length}/8 направлений. Минимум 4.`);
+            return;
+        }
+        
+        if (!this.epwData?.sectors) {
+            alert('Нет данных EPW. Загрузите файл EPW.');
+            return;
+        }
+        
+        const btn = document.getElementById('wcfd-calc-comfort');
+        if (btn) {
+            btn.disabled = true;
+            btn.textContent = '⏳ Расчёт...';
+        }
+        
+        try {
+            // Берём первый результат как reference для сетки
+            const refResult = validResults[0][1].data;
+            const grid = refResult.grid;
+            const nx = grid.nx;
+            const ny = grid.ny;
+            
+            // Определяем источник климатической скорости
+            const speedSource = this.comfortSettings.speedSource || 'p95';
+            console.log(`[WindCFD] Speed source: ${speedSource}`);
+            
+            // Пороги Lawson (м/с)
+            const lawsonThresholds = [
+                { key: 'sitting_long', threshold: 2.5 },
+                { key: 'sitting_short', threshold: 4.0 },
+                { key: 'standing', threshold: 6.0 },
+                { key: 'walking', threshold: 8.0 },
+                { key: 'uncomfortable', threshold: 10.0 },
+                { key: 'dangerous', threshold: Infinity }
+            ];
+            
+            // Создаём массивы для комфорта
+            const comfortGrid = Array(ny).fill(null).map(() => Array(nx).fill(0));
+            const categoryGrid = Array(ny).fill(null).map(() => Array(nx).fill('A'));
+            const exceedGrid = Array(ny).fill(null).map(() => Array(nx).fill(0));
+            
+            // Считаем общую частоту рассчитанных направлений для нормализации
+            let totalCoverage = 0;
+            for (const [angleStr, _] of validResults) {
+                const angle = parseInt(angleStr);
+                const sector = this.epwData.sectors.find(s => s.angle === angle);
+                if (sector) totalCoverage += sector.frequency;
+            }
+            console.log(`[WindCFD] Direction coverage: ${totalCoverage.toFixed(1)}% of wind hours`);
+            
+            // Собираем метаданные для каждого направления
+            const directionMeta = {};
+            for (const [angleStr, result] of validResults) {
+                const angle = parseInt(angleStr);
+                const sector = this.epwData.sectors.find(s => s.angle === angle);
+                if (!sector) continue;
+                
+                // Входная скорость CFD (из EPW mean при расчёте)
+                const inputSpeed = result.data.wind_speed || result.speed || sector.meanSpeed;
+                
+                // Климатическая скорость для анализа комфорта
+                let climateSpeed;
+                switch (speedSource) {
+                    case 'p95':
+                        // P95 скорость из EPW (реальные порывы)
+                        climateSpeed = sector.p95Speed || inputSpeed * 2.5;
+                        break;
+                    case 'gem':
+                        // GEM = inputSpeed × 2.0 (Gust Equivalent Mean)
+                        // Используем inputSpeed чтобы K × climateSpeed = V_cfd × 2.0
+                        climateSpeed = inputSpeed * 2.0;
+                        break;
+                    case 'max':
+                        // Максимальная скорость из EPW
+                        climateSpeed = sector.maxSpeed || inputSpeed * 3.5;
+                        break;
+                    case 'cfd':
+                    default:
+                        // Прямо из CFD (только для отладки)
+                        climateSpeed = inputSpeed;
+                }
+                
+                directionMeta[angle] = {
+                    inputSpeed,
+                    climateSpeed,
+                    frequency: sector.frequency / totalCoverage, // Нормализованная частота
+                    grid: result.data.grid.values
+                };
+                
+                console.log(`[WindCFD] ${angle}°: input=${inputSpeed.toFixed(2)}, climate=${climateSpeed.toFixed(2)}, freq=${(sector.frequency).toFixed(1)}%`);
+            }
+            
+            // Для каждой точки сетки
+            for (let iy = 0; iy < ny; iy++) {
+                for (let ix = 0; ix < nx; ix++) {
+                    
+                    // Собираем реальные скорости для всех направлений
+                    const realSpeedFreqPairs = [];
+                    let maxRealSpeed = 0;
+                    let weightedRealSpeed = 0;
+                    
+                    for (const [angleStr, meta] of Object.entries(directionMeta)) {
+                        const angle = parseInt(angleStr);
+                        
+                        // Скорость из CFD в этой точке
+                        const vCfd = meta.grid[iy]?.[ix] ?? 0;
+                        
+                        // Коэффициент усиления K = V_cfd / V_input
+                        const K = meta.inputSpeed > 0 ? vCfd / meta.inputSpeed : 1.0;
+                        
+                        // Реальная скорость V_real = K × V_climate
+                        const vReal = K * meta.climateSpeed;
+                        
+                        realSpeedFreqPairs.push({ 
+                            speed: vReal, 
+                            frequency: meta.frequency,
+                            K: K
+                        });
+                        
+                        maxRealSpeed = Math.max(maxRealSpeed, vReal);
+                        weightedRealSpeed += vReal * meta.frequency;
+                    }
+                    
+                    // Сохраняем взвешенную скорость для визуализации
+                    comfortGrid[iy][ix] = weightedRealSpeed;
+                    
+                    if (this.comfortSettings.standard === 'lawson') {
+                        // === LAWSON: Вероятность превышения каждого порога ===
+                        // Категория = лучшая, для которой P(exceed) < 5%
+                        
+                        let category = 'dangerous'; // Худшая по умолчанию
+                        
+                        for (const { key, threshold } of lawsonThresholds) {
+                            if (threshold === Infinity) {
+                                category = 'dangerous';
+                                break;
+                            }
+                            
+                            // P(U > threshold) = сумма частот где реальная скорость превышает порог
+                            let pExceed = 0;
+                            for (const { speed, frequency } of realSpeedFreqPairs) {
+                                if (speed > threshold) {
+                                    pExceed += frequency;
+                                }
+                            }
+                            
+                            // Если P(exceed) < 5%, эта категория ПОДХОДИТ
+                            if (pExceed < 0.05) {
+                                category = key;
+                                break;
+                            }
+                        }
+                        
+                        categoryGrid[iy][ix] = category;
+                        exceedGrid[iy][ix] = maxRealSpeed; // Макс. скорость для отладки
+                        
+                    } else {
+                        // === NEN 8100: P(U > 5 м/с) ===
+                        let pExceed5 = 0;
+                        for (const { speed, frequency } of realSpeedFreqPairs) {
+                            if (speed > 5.0) {
+                                pExceed5 += frequency;
+                            }
+                        }
+                        
+                        exceedGrid[iy][ix] = pExceed5 * 100; // В процентах
+                        categoryGrid[iy][ix] = this.getNEN8100Category(pExceed5 * 100);
+                    }
+                }
+            }
+            
+            // Статистика категорий
+            const categoryCount = {};
+            for (let iy = 0; iy < ny; iy++) {
+                for (let ix = 0; ix < nx; ix++) {
+                    const cat = categoryGrid[iy][ix];
+                    categoryCount[cat] = (categoryCount[cat] || 0) + 1;
+                }
+            }
+            console.log('[WindCFD] Category distribution:', categoryCount);
+            
+            // Статистика скоростей
+            const allSpeeds = comfortGrid.flat();
+            console.log(`[WindCFD] Speed stats: min=${Math.min(...allSpeeds).toFixed(2)}, max=${Math.max(...allSpeeds).toFixed(2)}, mean=${(allSpeeds.reduce((a,b)=>a+b,0)/allSpeeds.length).toFixed(2)}`);
+            
+            // Сохраняем результаты
+            this.comfortData = {
+                grid: {
+                    nx, ny,
+                    spacing: grid.spacing,
+                    origin: grid.origin,
+                    values: comfortGrid,
+                    categories: categoryGrid,
+                    exceedance: exceedGrid
+                },
+                standard: this.comfortSettings.standard,
+                speedSource: speedSource,
+                directionsCoverage: totalCoverage,
+                directionsUsed: validResults.length,
+                categoryDistribution: categoryCount,
+                timestamp: new Date().toISOString()
+            };
+            
+            // Скрываем текущий overlay направления
+            this.hideCurrentOverlay();
+            
+            // Рендерим комфортный overlay
+            this.renderComfortOverlay();
+            
+            // Показываем легенду и кнопки
+            this.renderComfortLegend();
+            
+            const hideBtn = document.getElementById('wcfd-hide-comfort');
+            const exportBtn = document.getElementById('wcfd-export-comfort');
+            if (hideBtn) hideBtn.classList.remove('wcfd-hidden');
+            if (exportBtn) exportBtn.classList.remove('wcfd-hidden');
+            
+            if (btn) {
+                btn.textContent = '✅ Готово!';
+                setTimeout(() => {
+                    btn.disabled = false;
+                    btn.textContent = '📊 Рассчитать комфорт';
+                }, 1500);
+            }
+            
+            console.log('[WindCFD] Wind comfort calculation complete');
+            
+        } catch (error) {
+            console.error('[WindCFD] Comfort calculation error:', error);
+            alert('Ошибка расчёта: ' + error.message);
+            if (btn) {
+                btn.disabled = false;
+                btn.textContent = '📊 Рассчитать комфорт';
+            }
+        }
+    }
+    
+    /**
+     * Определяет категорию Lawson по скорости
+     */
+    getLawsonCategory(speed) {
+        if (speed < 2.5) return 'sitting_long';
+        if (speed < 4.0) return 'sitting_short';
+        if (speed < 6.0) return 'standing';
+        if (speed < 8.0) return 'walking';
+        if (speed < 10.0) return 'uncomfortable';
+        return 'dangerous';
+    }
+    
+    /**
+     * Определяет категорию NEN 8100 по вероятности превышения
+     */
+    getNEN8100Category(exceedPercent) {
+        if (exceedPercent < 2.5) return 'A';
+        if (exceedPercent < 5.0) return 'B';
+        if (exceedPercent < 10.0) return 'C';
+        if (exceedPercent < 20.0) return 'D';
+        return 'E';
+    }
+    
+    /**
+     * Рендеринг overlay комфорта
+     */
+    renderComfortOverlay() {
+        this.hideComfortOverlay();
+        
+        if (!this.comfortData?.grid) return;
+        
+        const grid = this.comfortData.grid;
+        const nx = grid.nx;
+        const ny = grid.ny;
+        const spacing = grid.spacing;
+        const origin = grid.origin;
+        
+        // Создаём canvas для текстуры
+        const scale = Math.min(4, Math.floor(512 / Math.max(nx, ny)));
+        const texWidth = nx * scale;
+        const texHeight = ny * scale;
+        
+        const canvas = document.createElement('canvas');
+        canvas.width = texWidth;
+        canvas.height = texHeight;
+        const ctx = canvas.getContext('2d');
+        const imageData = ctx.createImageData(texWidth, texHeight);
+        
+        // Заполняем цветами категорий
+        for (let ty = 0; ty < texHeight; ty++) {
+            for (let tx = 0; tx < texWidth; tx++) {
+                const ix = Math.floor(tx / scale);
+                const iy = Math.floor(ty / scale);
+                
+                const category = grid.categories[iy]?.[ix] || 'A';
+                const color = this.getComfortColor(category);
+                
+                const idx = ((texHeight - 1 - ty) * texWidth + tx) * 4;
+                imageData.data[idx] = color[0];
+                imageData.data[idx + 1] = color[1];
+                imageData.data[idx + 2] = color[2];
+                imageData.data[idx + 3] = 200; // Полупрозрачность
+            }
+        }
+        
+        ctx.putImageData(imageData, 0, 0);
+        
+        const texture = new THREE.CanvasTexture(canvas);
+        texture.magFilter = THREE.NearestFilter; // Чёткие границы категорий
+        texture.minFilter = THREE.NearestFilter;
+        
+        const width = nx * spacing;
+        const height = ny * spacing;
+        
+        const geometry = new THREE.PlaneGeometry(width, height);
+        const material = new THREE.MeshBasicMaterial({
+            map: texture,
+            transparent: true,
+            opacity: 0.85,
+            side: THREE.DoubleSide
+        });
+        
+        this.comfortOverlay = new THREE.Mesh(geometry, material);
+        this.comfortOverlay.position.set(
+            origin[0] + width / 2,
+            origin[1] + height / 2,
+            this.sliceHeight + 0.1
+        );
+        
+        this.sceneManager.scene.add(this.comfortOverlay);
+        this.comfortSettings.showComfort = true;
+        
+        console.log(`[WindCFD] Comfort overlay rendered: ${nx}x${ny}`);
+    }
+    
+    /**
+     * Получает цвет для категории комфорта
+     */
+    getComfortColor(category) {
+        if (this.comfortSettings.standard === 'lawson') {
+            return this.lawsonCriteria[category]?.color || [128, 128, 128];
+        } else {
+            return this.nen8100Criteria[category]?.color || [128, 128, 128];
+        }
+    }
+    
+    /**
+     * Рендерит легенду комфорта
+     */
+    renderComfortLegend() {
+        const container = document.getElementById('wcfd-comfort-legend');
+        if (!container) return;
+        
+        container.classList.remove('wcfd-hidden');
+        
+        let html = '<div style="font-size: 12px; font-weight: 600; margin-bottom: 6px;">Категории комфорта:</div>';
+        
+        if (this.comfortSettings.standard === 'lawson') {
+            html += '<div style="display: grid; gap: 4px;">';
+            for (const [key, data] of Object.entries(this.lawsonCriteria)) {
+                const rgb = data.color;
+                html += `
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                        <div style="width: 20px; height: 14px; background: rgb(${rgb[0]},${rgb[1]},${rgb[2]}); border-radius: 2px; border: 1px solid #ccc;"></div>
+                        <span style="font-size: 11px;"><strong>${data.label}</strong> - ${data.desc} (<${data.threshold === Infinity ? '∞' : data.threshold} м/с)</span>
+                    </div>
+                `;
+            }
+            html += '</div>';
+        } else {
+            html += '<div style="display: grid; gap: 4px;">';
+            for (const [key, data] of Object.entries(this.nen8100Criteria)) {
+                const rgb = data.color;
+                html += `
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                        <div style="width: 20px; height: 14px; background: rgb(${rgb[0]},${rgb[1]},${rgb[2]}); border-radius: 2px; border: 1px solid #ccc;"></div>
+                        <span style="font-size: 11px;"><strong>${data.label}</strong> - ${data.desc} (P<${data.maxExceed}%)</span>
+                    </div>
+                `;
+            }
+            html += '</div>';
+        }
+        
+        container.innerHTML = html;
+    }
+    
+    /**
+     * Скрывает overlay комфорта
+     */
+    hideComfortOverlay() {
+        if (this.comfortOverlay) {
+            this.sceneManager.scene.remove(this.comfortOverlay);
+            if (this.comfortOverlay.material.map) {
+                this.comfortOverlay.material.map.dispose();
+            }
+            this.comfortOverlay.material.dispose();
+            this.comfortOverlay.geometry.dispose();
+            this.comfortOverlay = null;
+        }
+        
+        this.comfortSettings.showComfort = false;
+        
+        const legend = document.getElementById('wcfd-comfort-legend');
+        if (legend) legend.classList.add('wcfd-hidden');
+        
+        const hideBtn = document.getElementById('wcfd-hide-comfort');
+        if (hideBtn) hideBtn.classList.add('wcfd-hidden');
+    }
+    
+    /**
+     * Экспорт данных комфорта в JSON
+     */
+    exportComfortData() {
+        if (!this.comfortData) {
+            alert('Сначала рассчитайте комфорт');
+            return;
+        }
+        
+        const exportData = {
+            ...this.comfortData,
+            epw: {
+                location: this.epwData?.location || 'Unknown',
+                filename: this.epwData?.filename || 'Unknown'
+            },
+            settings: this.comfortSettings
+        };
+        
+        const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `wind_comfort_${this.comfortSettings.standard}_${new Date().toISOString().slice(0,10)}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+        
+        console.log('[WindCFD] Comfort data exported');
+    }
+    
     destroy() {
         this.hideDomain();
         this.hideCurrentOverlay();
+        this.hideComfortOverlay();
         this.hideWindArrow();
         if (this.panel) {
             this.panel.remove();

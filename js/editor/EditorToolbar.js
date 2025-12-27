@@ -83,6 +83,11 @@ class EditorToolbar {
                 </div>
             </div>
             <div class="tool-separator"></div>
+            <button class="tool-btn" data-action="solar-radiation" title="Solar Radiation (S)">
+                <span class="tool-icon">☀️</span>
+                <span class="tool-label">Солнце</span>
+            </button>
+            <div class="tool-separator"></div>
             <button class="tool-btn danger" data-tool="delete" title="Удалить (Del)">
                 <span class="tool-icon">🗑</span>
                 <span class="tool-label">Удалить</span>
@@ -98,6 +103,18 @@ class EditorToolbar {
                 this.setTool(btn.dataset.tool);
             });
         });
+
+        // Solar Radiation button
+        const solarBtn = this.element.querySelector('[data-action="solar-radiation"]');
+        if (solarBtn) {
+            solarBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (window.app?.controllers?.solarRadiation) {
+                    window.app.controllers.solarRadiation.togglePanel();
+                }
+            });
+        }
 
         this._initFileMenu();
         this._initDrawMenu();
@@ -117,6 +134,12 @@ class EditorToolbar {
                 case 'KeyV': this.setTool('select'); break;
                 case 'KeyM': this.setTool('move'); break;
                 case 'KeyD': this.setTool('draw'); break;
+                case 'KeyS': 
+                    // Solar Radiation toggle
+                    if (window.app?.controllers?.solarRadiation) {
+                        window.app.controllers.solarRadiation.togglePanel();
+                    }
+                    break;
                 case 'Delete': this.setTool('delete'); break;
                 case 'Escape': this.setTool('select'); break;
             }

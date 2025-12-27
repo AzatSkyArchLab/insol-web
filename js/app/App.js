@@ -39,6 +39,7 @@ import { ViolationHighlighter } from '../insolation/ViolationHighlighter.js';
 import { SolarPotential } from '../analysis/SolarPotential.js';
 import { TowerPlacer } from '../analysis/TowerPlacer.js';
 import { TowerPlacerUI } from '../analysis/TowerPlacerUI.js';
+import { SolarRadiation } from '../analysis/SolarRadiation.js';  // <-- ДОБАВЛЕНО
 // WindCFD импортируется динамически в WindController
 
 // I/O
@@ -52,6 +53,7 @@ import { WindController } from '../controllers/WindController.js';
 import { ProjectController } from '../controllers/ProjectController.js';
 import { UnderlayController } from '../controllers/UnderlayController.js';
 import { DetailedGridController } from '../controllers/DetailedGridController.js';
+import { SolarRadiationController } from '../controllers/SolarRadiationController.js';  // <-- ДОБАВЛЕНО
 
 
 class App {
@@ -87,7 +89,8 @@ class App {
             wind: new WindController(this),
             project: new ProjectController(this),
             underlay: new UnderlayController(this),
-            detailedGrid: new DetailedGridController(this)
+            detailedGrid: new DetailedGridController(this),
+            solarRadiation: new SolarRadiationController(this)  // <-- ДОБАВЛЕНО
         };
     }
     
@@ -272,6 +275,11 @@ class App {
         
         // Очистка ветра
         this._removeWindOverlay();
+        
+        // Очистка Solar Radiation  // <-- ДОБАВЛЕНО
+        if (this.controllers.solarRadiation?.solarRadiation) {
+            this.controllers.solarRadiation.solarRadiation.clearVisualization();
+        }
         
         // Сброс состояния
         state.resetSceneState();
