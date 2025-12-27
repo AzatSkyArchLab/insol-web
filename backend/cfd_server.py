@@ -1563,15 +1563,54 @@ surfaces
         
         print(f"[GRID] Building {nx}x{ny} grid")
         
+
         from collections import defaultdict
-        # Smaller cell_size for better coverage of triangulated VTK data
-        cell_size = spacing * 0.4  # was 0.6
+
+        # Увеличенный cell_size для лучшего покрытия
+        cell_size = spacing * 1.5
         point_cells = defaultdict(list)
         for p in points:
-            # Use floor for consistent cell assignment
             cx = int(p['x'] // cell_size)
             cy = int(p['y'] // cell_size)
             point_cells[(cx, cy)].append(p)
+        
+        def idw_interpolate(x, y, search_radius=3):
+            """IDW интерполяция с fallback на ближайшую точку"""
+            cx = int(x // cell_size)
+            cy = int(y // cell_size)
+            
+            nearby = []
+            for dcx in range(-search_radius, search_radius + 1):
+                for dcy in range(-search_radius, search_radius + 1):
+                    nearby.extend(point_cells.get((cx + dcx, cy + dcy), []))
+            
+            if not nearby:
+                return 0, 0, 0
+            
+            weights = []
+            weighted_points = []
+            max_dist = spacing * 4
+            
+            for p in nearby:
+                dist = math.sqrt((p['x'] - x)**2 + (p['y'] - y)**2)
+                if dist < 0.1:  # Exact match
+                    return p['speed'], p.get('vx', 0), p.get('vy', 0)
+                if dist <= max_dist:
+                    w = 1.0 / (dist ** 2)
+                    weights.append(w)
+                    weighted_points.append(p)
+            
+            if not weights:
+                # Fallback: nearest point without distance limit
+                best_p = min(nearby, key=lambda p: (p['x']-x)**2 + (p['y']-y)**2)
+                return best_p['speed'], best_p.get('vx', 0), best_p.get('vy', 0)
+            
+            total_w = sum(weights)
+            speed = sum(w * p['speed'] for w, p in zip(weights, weighted_points)) / total_w
+            vx = sum(w * p.get('vx', 0) for w, p in zip(weights, weighted_points)) / total_w
+            vy = sum(w * p.get('vy', 0) for w, p in zip(weights, weighted_points)) / total_w
+            
+            return speed, vx, vy
         
         grid_2d = []
         vectors = []
@@ -1582,25 +1621,9 @@ surfaces
             vec_row = []
             for ix in range(nx):
                 x = x_min + ix * spacing
-                cx = int(x // cell_size)
-                cy = int(y // cell_size)
-                best_p = None
-                best_dist = float('inf')
-                # Expanded search radius: ±2 cells instead of ±1
-                for dcx in [-2, -1, 0, 1, 2]:
-                    for dcy in [-2, -1, 0, 1, 2]:
-                        for p in point_cells.get((cx + dcx, cy + dcy), []):
-                            dist = (p['x'] - x)**2 + (p['y'] - y)**2
-                            if dist < best_dist:
-                                best_dist = dist
-                                best_p = p
-                # Increased max distance threshold
-                if best_p and best_dist < (spacing * 2.0)**2:  # was 1.5
-                    row.append(best_p['speed'])
-                    vec_row.append([best_p.get('vx', 0), best_p.get('vy', 0)])
-                else:
-                    row.append(0)
-                    vec_row.append([0, 0])
+                speed, vx, vy = idw_interpolate(x, y)
+                row.append(round(speed, 4))
+                vec_row.append([round(vx, 4), round(vy, 4)])
             grid_2d.append(row)
             vectors.append(vec_row)
         
