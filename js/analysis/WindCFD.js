@@ -2790,7 +2790,15 @@ class WindCFD {
     
     async resampleSlice() {
         const resampleBtn = document.getElementById('wcfd-resample');
-        if (!resampleBtn) return;
+        if (!resampleBtn) {
+            console.error('[WindCFD] Resample button not found');
+            return;
+        }
+        
+        console.log('[WindCFD] resampleSlice called');
+        console.log('[WindCFD] activeDirection:', this.activeDirection);
+        console.log('[WindCFD] sliceHeight:', this.sliceHeight);
+        console.log('[WindCFD] serverUrl:', this.serverUrl);
         
         if (this.activeDirection === null) {
             alert('Сначала выберите направление');
@@ -2800,22 +2808,35 @@ class WindCFD {
         resampleBtn.disabled = true;
         resampleBtn.textContent = '⏳ Пересчёт...';
         
+        const requestBody = {
+            z: this.sliceHeight,
+            direction: this.activeDirection
+        };
+        console.log('[WindCFD] Request body:', JSON.stringify(requestBody));
+        
         try {
-            const response = await this._fetch(`${this.serverUrl}/resample`, {
+            const url = `${this.serverUrl}/resample`;
+            console.log('[WindCFD] Fetching:', url);
+            
+            const response = await this._fetch(url, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    z: this.sliceHeight,
-                    direction: this.activeDirection
-                })
+                body: JSON.stringify(requestBody)
             });
             
+            console.log('[WindCFD] Response status:', response.status);
+            console.log('[WindCFD] Response ok:', response.ok);
+            
             if (!response.ok) {
-                throw new Error('Ошибка пересчёта');
+                const errorText = await response.text();
+                console.error('[WindCFD] Response error text:', errorText);
+                throw new Error(`Ошибка пересчёта: ${response.status} - ${errorText}`);
             }
             
             const result = await response.json();
             console.log(`[WindCFD] Пересчитан срез на высоте ${this.sliceHeight}м`);
+            console.log('[WindCFD] Result grid:', result.grid ? `${result.grid.nx}x${result.grid.ny}` : 'no grid');
+            console.log('[WindCFD] Result stats:', result.stats);
             
             // Обновляем данные для текущего направления
             if (this.activeDirection !== null && this.results[this.activeDirection]) {
@@ -2836,13 +2857,15 @@ class WindCFD {
             
         } catch (error) {
             console.error('[WindCFD] Resample error:', error);
+            console.error('[WindCFD] Error name:', error.name);
+            console.error('[WindCFD] Error message:', error.message);
             resampleBtn.textContent = '❌ Ошибка';
             setTimeout(() => {
                 resampleBtn.disabled = false;
                 resampleBtn.textContent = '🔄 Пересчитать срез';
             }, 2000);
             
-            alert('Ошибка пересчёта. Убедитесь что сервер запущен и есть рассчитанный кейс.');
+            alert(`Ошибка пересчёта: ${error.message}`);
         }
     }
     
