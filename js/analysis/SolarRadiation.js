@@ -1,8 +1,6 @@
 /**
- * ============================================
- * SolarRadiation.js v5.1
+ * SolarRadiation.js v5.2
  * Direct Sun Hours - Client-Side
- * ============================================
  */
 
 class SolarRadiation {
@@ -12,26 +10,190 @@ class SolarRadiation {
         
         this.resultMesh = null;
         this.legendElement = null;
-        
         this.lastResults = null;
         this.isCalculating = false;
-        
         this.epwData = null;
         
         this.raycaster = new THREE.Raycaster();
         this.colorScale = options.colorScale || 'viridis';
         this.onProgress = options.onProgress || null;
         
-        console.log('[SolarRadiation] v5.1');
+        // Для умного клика
+        this.mouseDownPos = null;
+        this.mouseDownTime = 0;
+        this.wasDragging = false;
+        this.tooltip = null;
+        this._clickHandlerActive = false;
+        
+        console.log('[SolarRadiation] v5.2');
+    }
+    
+    // ============================================
+    // Smart Click для показа часов
+    // ============================================
+    
+    _initClickHandler() {
+        // Защита от двойной инициализации
+        if (this._clickHandlerActive) return;
+        
+        const canvas = this.sceneManager.renderer.domElement;
+        
+        this._onMouseDownHandler = (e) => {
+            if (e.button !== 0) return;
+            this.mouseDownPos = { x: e.clientX, y: e.clientY };
+            this.mouseDownTime = Date.now();
+            this.wasDragging = false; // Сбрасываем при новом нажатии
+        };
+        
+        this._onMouseMoveHandler = (e) => {
+            // Если двигаем мышь с нажатой кнопкой - отмечаем что это drag
+            if (this.mouseDownPos && !this.wasDragging) {
+                const dx = e.clientX - this.mouseDownPos.x;
+                const dy = e.clientY - this.mouseDownPos.y;
+                if (Math.sqrt(dx * dx + dy * dy) > 3) {
+                    this.wasDragging = true;
+                }
+            }
+        };
+        
+        this._onClickHandler = (e) => {
+            if (e.button !== 0) return;
+            if (!this.resultMesh || !this.lastResults) return;
+            
+            // Если был drag - это завершающий клик после перемещения, пропускаем
+            if (this.wasDragging) {
+                this.wasDragging = false;
+                this.mouseDownPos = null;
+                return;
+            }
+            
+            // Проверяем время клика - долгое нажатие не считается кликом
+            if (this.mouseDownPos) {
+                const elapsed = Date.now() - this.mouseDownTime;
+                if (elapsed > 400) {
+                    this.mouseDownPos = null;
+                    return;
+                }
+            }
+            
+            this.mouseDownPos = null;
+            
+            // Чистый клик - показываем информацию
+            this._showHoursAtClick(e);
+        };
+        
+        canvas.addEventListener('mousedown', this._onMouseDownHandler);
+        canvas.addEventListener('mousemove', this._onMouseMoveHandler);
+        canvas.addEventListener('click', this._onClickHandler);
+        
+        this._clickHandlerActive = true;
+    }
+    
+    _removeClickHandler() {
+        if (!this._clickHandlerActive) return;
+        
+        const canvas = this.sceneManager.renderer?.domElement;
+        if (canvas) {
+            if (this._onMouseDownHandler) canvas.removeEventListener('mousedown', this._onMouseDownHandler);
+            if (this._onMouseMoveHandler) canvas.removeEventListener('mousemove', this._onMouseMoveHandler);
+            if (this._onClickHandler) canvas.removeEventListener('click', this._onClickHandler);
+        }
+        
+        this._clickHandlerActive = false;
+    }
+    
+    _showHoursAtClick(e) {
+        const canvas = this.sceneManager.renderer.domElement;
+        const rect = canvas.getBoundingClientRect();
+        
+        const mouse = new THREE.Vector2(
+            ((e.clientX - rect.left) / rect.width) * 2 - 1,
+            -((e.clientY - rect.top) / rect.height) * 2 + 1
+        );
+        
+        this.raycaster.setFromCamera(mouse, this.sceneManager.camera);
+        
+        const intersects = this.raycaster.intersectObject(this.resultMesh, false);
+        
+        if (intersects.length === 0) {
+            this._hideTooltip();
+            return;
+        }
+        
+        const hit = intersects[0];
+        const faceIndex = hit.faceIndex;
+        
+        // Найти соответствующий face в результатах
+        const faces = this.lastResults.faces;
+        
+        let triangleCount = 0;
+        let foundFace = null;
+        
+        for (const face of faces) {
+            const numTriangles = face.isGround && face.vertices.length === 4 ? 2 : 1;
+            
+            if (faceIndex >= triangleCount && faceIndex < triangleCount + numTriangles) {
+                foundFace = face;
+                break;
+            }
+            
+            triangleCount += numTriangles;
+        }
+        
+        if (foundFace) {
+            const factor = this.lastResults.statistics?.extrapolation_factor || 1;
+            const realHours = Math.round(foundFace.sun_hours * factor);
+            const type = foundFace.isGround ? 'Земля' : 'Здание';
+            this._showTooltip(e.clientX, e.clientY, `${realHours} ч`, type);
+        }
+    }
+    
+    _showTooltip(x, y, text, subtitle) {
+        if (!this.tooltip) {
+            this.tooltip = document.createElement('div');
+            this.tooltip.id = 'solar-tooltip';
+            this.tooltip.style.cssText = `
+                position: fixed;
+                background: rgba(0, 0, 0, 0.85);
+                color: white;
+                padding: 8px 12px;
+                border-radius: 6px;
+                font-family: system-ui, sans-serif;
+                font-size: 14px;
+                font-weight: 600;
+                pointer-events: none;
+                z-index: 10000;
+                transform: translate(-50%, -100%);
+                margin-top: -10px;
+                box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+            `;
+            document.body.appendChild(this.tooltip);
+        }
+        
+        this.tooltip.innerHTML = `
+            <div style="text-align: center;">
+                <div>☀️ ${text}</div>
+                ${subtitle ? `<div style="font-size: 11px; font-weight: normal; opacity: 0.7; margin-top: 2px;">${subtitle}</div>` : ''}
+            </div>
+        `;
+        this.tooltip.style.left = x + 'px';
+        this.tooltip.style.top = y + 'px';
+        this.tooltip.style.display = 'block';
+        
+        // Автоскрытие через 2 секунды
+        clearTimeout(this._tooltipTimeout);
+        this._tooltipTimeout = setTimeout(() => this._hideTooltip(), 2000);
+    }
+    
+    _hideTooltip() {
+        if (this.tooltip) {
+            this.tooltip.style.display = 'none';
+        }
     }
     
     async checkServer() {
         return true;
     }
-    
-    // ============================================
-    // EPW Parser
-    // ============================================
     
     loadEPW(file) {
         return new Promise((resolve, reject) => {
@@ -70,9 +232,7 @@ class SolarRadiation {
                     }
                     
                     this.epwData = { location, hourlyData };
-                    
-                    console.log(`[SolarRadiation] EPW: ${location.city}, lat=${location.latitude}, lon=${location.longitude}`);
-                    
+                    console.log('[SolarRadiation] EPW:', location.city, location.latitude, location.longitude);
                     resolve(this.epwData);
                 } catch (err) {
                     reject(new Error('Ошибка парсинга EPW: ' + err.message));
@@ -92,10 +252,6 @@ class SolarRadiation {
     hasEPW() {
         return this.epwData !== null;
     }
-    
-    // ============================================
-    // Sun Position
-    // ============================================
     
     _getSunPosition(date, lat, lon) {
         const y = date.getFullYear();
@@ -140,7 +296,6 @@ class SolarRadiation {
         } = options;
         
         const vectors = [];
-        
         const startDate = new Date(year, startMonth - 1, startDay, startHour);
         const endDate = new Date(year, endMonth - 1, endDay, endHour);
         
@@ -170,17 +325,12 @@ class SolarRadiation {
                     }
                 }
             }
-            
             current.setDate(current.getDate() + 1);
             dayCount++;
         }
         
         return vectors;
     }
-    
-    // ============================================
-    // Mesh Processing
-    // ============================================
     
     _createGroundMesh(bbox, buffer, targetArea) {
         const x0 = bbox.minX - buffer;
@@ -204,7 +354,6 @@ class SolarRadiation {
         
         const stepX = width / nx;
         const stepY = height / ny;
-        
         const faces = [];
         
         for (let j = 0; j < ny; j++) {
@@ -212,18 +361,15 @@ class SolarRadiation {
                 const x = x0 + i * stepX;
                 const y = y0 + j * stepY;
                 
-                const v0 = new THREE.Vector3(x, y, 0);
-                const v1 = new THREE.Vector3(x + stepX, y, 0);
-                const v2 = new THREE.Vector3(x + stepX, y + stepY, 0);
-                const v3 = new THREE.Vector3(x, y + stepY, 0);
-                
-                const center = new THREE.Vector3(x + stepX/2, y + stepY/2, 0);
-                const normal = new THREE.Vector3(0, 0, 1);
-                
                 faces.push({
-                    vertices: [v0, v1, v2, v3],
-                    center,
-                    normal,
+                    vertices: [
+                        new THREE.Vector3(x, y, 0),
+                        new THREE.Vector3(x + stepX, y, 0),
+                        new THREE.Vector3(x + stepX, y + stepY, 0),
+                        new THREE.Vector3(x, y + stepY, 0)
+                    ],
+                    center: new THREE.Vector3(x + stepX/2, y + stepY/2, 0),
+                    normal: new THREE.Vector3(0, 0, 1),
                     area: stepX * stepY,
                     isGround: true
                 });
@@ -242,9 +388,9 @@ class SolarRadiation {
             const center = new THREE.Vector3().addVectors(v0, v1).add(v2).divideScalar(3);
             return [{
                 vertices: [v0.clone(), v1.clone(), v2.clone()],
-                center,
+                center: center,
                 normal: normal.clone(),
-                area,
+                area: area,
                 isGround: false
             }];
         }
@@ -262,18 +408,37 @@ class SolarRadiation {
         return results;
     }
     
-    _extractFacesWithSubdivision(mesh, targetArea, maxFaces = 5000) {
+    _extractFacesWithSubdivision(mesh, targetArea, maxFaces = 50000) {
         const geometry = mesh.geometry;
+        
+        if (!geometry) {
+            console.warn('[SolarRadiation] Mesh has no geometry:', mesh.userData?.id);
+            return [];
+        }
+        
         const position = geometry.attributes.position;
+        
+        if (!position) {
+            console.warn('[SolarRadiation] Geometry has no position attribute:', mesh.userData?.id);
+            return [];
+        }
+        
         const index = geometry.index;
         
         mesh.updateMatrixWorld();
         const matrix = mesh.matrixWorld;
-        
         const faces = [];
         
+        let skippedSmall = 0;
+        let totalTriangles = 0;
+        
         const processTriangle = (i0, i1, i2) => {
-            if (faces.length >= maxFaces) return;
+            // Проверка индексов
+            if (i0 >= position.count || i1 >= position.count || i2 >= position.count) {
+                return;
+            }
+            
+            totalTriangles++;
             
             const v0 = new THREE.Vector3().fromBufferAttribute(position, i0).applyMatrix4(matrix);
             const v1 = new THREE.Vector3().fromBufferAttribute(position, i1).applyMatrix4(matrix);
@@ -281,28 +446,53 @@ class SolarRadiation {
             
             const edge1 = new THREE.Vector3().subVectors(v1, v0);
             const edge2 = new THREE.Vector3().subVectors(v2, v0);
-            const normal = new THREE.Vector3().crossVectors(edge1, edge2).normalize();
+            let normal = new THREE.Vector3().crossVectors(edge1, edge2);
             
-            if (normal.z < -0.3) return;
+            const area = normal.length() * 0.5;
+            
+            // Пропускаем только совсем вырожденные треугольники
+            if (area < 0.0001) {
+                skippedSmall++;
+                return;
+            }
+            
+            normal.normalize();
+            
+            // Переворачиваем нормаль если смотрит вниз (исправляем развёрнутые нормали)
+            if (normal.z < 0) {
+                normal.negate();
+            }
             
             const subdivided = this._subdivideTriangle(v0, v1, v2, normal, targetArea);
             
             for (const face of subdivided) {
-                if (faces.length >= maxFaces) break;
                 faces.push(face);
             }
         };
         
         if (index) {
+            console.log(`[SolarRadiation] Indexed geometry: ${index.count} indices, ${position.count} vertices`);
             for (let i = 0; i < index.count; i += 3) {
-                if (faces.length >= maxFaces) break;
                 processTriangle(index.getX(i), index.getX(i + 1), index.getX(i + 2));
             }
         } else {
+            console.log(`[SolarRadiation] Non-indexed geometry: ${position.count} vertices`);
             for (let i = 0; i < position.count; i += 3) {
-                if (faces.length >= maxFaces) break;
                 processTriangle(i, i + 1, i + 2);
             }
+        }
+        
+        console.log(`[SolarRadiation] Result: ${totalTriangles} triangles, ${skippedSmall} skipped, ${faces.length} faces`);
+        
+        // Если слишком много faces - прореживаем равномерно
+        if (faces.length > maxFaces) {
+            console.warn(`[SolarRadiation] Too many faces (${faces.length}), sampling down to ${maxFaces}`);
+            const step = faces.length / maxFaces;
+            const sampled = [];
+            for (let i = 0; i < maxFaces; i++) {
+                sampled.push(faces[Math.floor(i * step)]);
+            }
+            return sampled;
         }
         
         return faces;
@@ -352,10 +542,6 @@ class SolarRadiation {
         return { minX, maxX, minY, maxY };
     }
     
-    // ============================================
-    // Analysis
-    // ============================================
-    
     async analyzeBuildings(selectedMeshes, options = {}) {
         if (this.isCalculating) {
             throw new Error('Расчёт уже выполняется');
@@ -370,7 +556,7 @@ class SolarRadiation {
                 throw new Error('Не выбрано ни одного здания');
             }
             
-            console.log(`[SolarRadiation] Анализ ${meshes.length} зданий...`);
+            console.log('[SolarRadiation] Анализ', meshes.length, 'зданий...');
             
             const loc = this.epwData?.location || options.location || { latitude: 55.75, longitude: 37.62 };
             
@@ -396,11 +582,21 @@ class SolarRadiation {
                 endMonth, endDay, endHour,
                 dayStep, hourStep
             });
-            console.log(`[SolarRadiation] Солнечных позиций: ${sunVectors.length}`);
+            
+            console.log('[SolarRadiation] Солнечных позиций:', sunVectors.length);
             
             if (sunVectors.length === 0) {
                 throw new Error('Нет солнечных позиций для выбранного периода');
             }
+            
+            // Считаем реальное количество дней в периоде и коэффициент экстраполяции
+            const startDate = new Date(year, startMonth - 1, startDay);
+            const endDate = new Date(year, endMonth - 1, endDay);
+            const totalDays = Math.round((endDate - startDate) / (1000 * 60 * 60 * 24)) + 1;
+            const sampledDays = Math.ceil(totalDays / dayStep);
+            const extrapolationFactor = totalDays / sampledDays;
+            
+            console.log('[SolarRadiation] Период:', totalDays, 'дней, сэмплировано:', sampledDays, ', коэфф:', extrapolationFactor.toFixed(2));
             
             const bbox = this._computeBoundingBox(meshes);
             
@@ -408,25 +604,41 @@ class SolarRadiation {
             await this._sleep(10);
             
             const groundFaces = this._createGroundMesh(bbox, groundBuffer, groundTargetArea);
-            console.log(`[SolarRadiation] Ground: ${groundFaces.length} ячеек`);
+            console.log('[SolarRadiation] Ground:', groundFaces.length, 'ячеек');
             
             this._updateProgress('Subdivision зданий...', 15);
             await this._sleep(10);
             
             let buildingFaces = [];
-            for (const mesh of meshes) {
+            const maxTotalBuildingFaces = 50000;
+            
+            for (let mi = 0; mi < meshes.length; mi++) {
+                const mesh = meshes[mi];
+                console.log(`[SolarRadiation] Processing building ${mi + 1}/${meshes.length}:`, mesh.userData?.id || 'unknown');
                 const faces = this._extractFacesWithSubdivision(mesh, targetFaceArea);
                 buildingFaces = buildingFaces.concat(faces);
             }
-            console.log(`[SolarRadiation] Здания: ${buildingFaces.length} граней`);
+            
+            // Если слишком много - прореживаем
+            if (buildingFaces.length > maxTotalBuildingFaces) {
+                console.warn(`[SolarRadiation] Total building faces (${buildingFaces.length}) exceeds limit, sampling to ${maxTotalBuildingFaces}`);
+                const step = buildingFaces.length / maxTotalBuildingFaces;
+                const sampled = [];
+                for (let i = 0; i < maxTotalBuildingFaces; i++) {
+                    sampled.push(buildingFaces[Math.floor(i * step)]);
+                }
+                buildingFaces = sampled;
+            }
+            
+            console.log('[SolarRadiation] Здания:', buildingFaces.length, 'граней');
             
             const obstacles = this._collectObstacles();
-            console.log(`[SolarRadiation] Препятствия: ${obstacles.length}`);
+            console.log('[SolarRadiation] Препятствия:', obstacles.length);
             
             const allFaces = [...groundFaces, ...buildingFaces];
             const totalFaces = allFaces.length;
             
-            console.log(`[SolarRadiation] Всего: ${totalFaces} точек × ${sunVectors.length} солнц`);
+            console.log('[SolarRadiation] Всего:', totalFaces, '×', sunVectors.length);
             
             this._updateProgress('Ray casting...', 20);
             
@@ -437,7 +649,7 @@ class SolarRadiation {
                 const face = allFaces[faceIdx];
                 
                 for (const sunVec of sunVectors) {
-                    const cosIncidence = face.normal.dot(sunVec);
+                    const cosIncidence = Math.abs(face.normal.dot(sunVec));
                     if (cosIncidence <= 0.01) continue;
                     
                     if (!this._isShaded(face.center, sunVec, obstacles)) {
@@ -447,7 +659,7 @@ class SolarRadiation {
                 
                 if (faceIdx % progressStep === 0) {
                     const pct = 20 + Math.floor(faceIdx / totalFaces * 75);
-                    this._updateProgress(`Ray casting... ${Math.floor(faceIdx / totalFaces * 100)}%`, pct);
+                    this._updateProgress('Ray casting... ' + Math.floor(faceIdx / totalFaces * 100) + '%', pct);
                     await this._sleep(0);
                 }
             }
@@ -465,15 +677,17 @@ class SolarRadiation {
                 isGround: face.isGround
             }));
             
-            const hours = sunHours;
             const stats = {
                 total_faces: totalFaces,
                 ground_faces: groundFaces.length,
                 building_faces: buildingFaces.length,
                 sun_vectors_count: sunVectors.length,
-                min_hours: Math.min(...hours),
-                max_hours: Math.max(...hours),
-                mean_hours: hours.reduce((a, b) => a + b, 0) / hours.length,
+                total_days: totalDays,
+                sampled_days: sampledDays,
+                extrapolation_factor: extrapolationFactor,
+                min_hours: Math.min(...sunHours) * extrapolationFactor,
+                max_hours: Math.max(...sunHours) * extrapolationFactor,
+                mean_hours: sunHours.reduce((a, b) => a + b, 0) / sunHours.length * extrapolationFactor,
                 time_seconds: elapsed.toFixed(1)
             };
             
@@ -484,8 +698,7 @@ class SolarRadiation {
                 statistics: stats
             };
             
-            console.log(`[SolarRadiation] Готово за ${elapsed.toFixed(1)}s`);
-            console.log(`[SolarRadiation] ${stats.min_hours}-${stats.max_hours} часов (среднее ${stats.mean_hours.toFixed(0)})`);
+            console.log('[SolarRadiation] Готово за', elapsed.toFixed(1), 's');
             
             this.lastResults = result;
             this._visualizeResults(result);
@@ -509,26 +722,26 @@ class SolarRadiation {
         }
     }
     
-    // ============================================
-    // Visualization
-    // ============================================
-    
     _visualizeResults(result) {
         this.clearVisualization();
         
         const faces = result.faces;
         if (!faces || faces.length === 0) return;
         
-        const values = faces.map(f => f.sun_hours || 0);
+        const factor = result.statistics?.extrapolation_factor || 1;
+        
+        // Реальные часы = sun_hours * factor
+        const values = faces.map(f => (f.sun_hours || 0) * factor);
         const minVal = Math.min(...values);
         const maxVal = Math.max(...values);
         
         const positions = [];
         const colors = [];
         
-        for (const face of faces) {
-            const value = face.sun_hours || 0;
-            const t = maxVal > minVal ? (value - minVal) / (maxVal - minVal) : 0;
+        for (let i = 0; i < faces.length; i++) {
+            const face = faces[i];
+            const realHours = (face.sun_hours || 0) * factor;
+            const t = maxVal > minVal ? (realHours - minVal) / (maxVal - minVal) : 0;
             const color = this._getColor(t);
             
             const verts = face.vertices;
@@ -544,20 +757,23 @@ class SolarRadiation {
                 positions.push(v2.x, v2.y, v2.z);
                 positions.push(v3.x, v3.y, v3.z);
                 
-                for (let i = 0; i < 6; i++) {
+                for (let j = 0; j < 6; j++) {
                     colors.push(color.r, color.g, color.b);
                 }
             } else if (verts.length === 3) {
                 const [v0, v1, v2] = verts;
                 
                 const n = face.normal;
-                const off = 0.02;
+                const nx = typeof n[0] === 'number' ? n[0] : n.x;
+                const ny = typeof n[1] === 'number' ? n[1] : n.y;
+                const nz = typeof n[2] === 'number' ? n[2] : n.z;
+                const off = 0.03;
                 
-                positions.push(v0.x + n[0]*off, v0.y + n[1]*off, v0.z + n[2]*off);
-                positions.push(v1.x + n[0]*off, v1.y + n[1]*off, v1.z + n[2]*off);
-                positions.push(v2.x + n[0]*off, v2.y + n[1]*off, v2.z + n[2]*off);
+                positions.push(v0.x + nx*off, v0.y + ny*off, v0.z + nz*off);
+                positions.push(v1.x + nx*off, v1.y + ny*off, v1.z + nz*off);
+                positions.push(v2.x + nx*off, v2.y + ny*off, v2.z + nz*off);
                 
-                for (let i = 0; i < 3; i++) {
+                for (let j = 0; j < 3; j++) {
                     colors.push(color.r, color.g, color.b);
                 }
             }
@@ -578,6 +794,9 @@ class SolarRadiation {
         this.resultMesh = new THREE.Mesh(geometry, material);
         this.resultMesh.renderOrder = 999;
         this.scene.add(this.resultMesh);
+        
+        // Включаем обработчик кликов
+        this._initClickHandler();
         
         this._showLegend(minVal, maxVal, result.statistics);
     }
@@ -610,24 +829,6 @@ class SolarRadiation {
                 }
                 break;
                 
-            case 'thermal':
-            case 'red':
-                if (t < 0.33) {
-                    r = t / 0.33; g = 0; b = 0;
-                } else if (t < 0.66) {
-                    r = 1; g = (t - 0.33) / 0.33; b = 0;
-                } else {
-                    r = 1; g = 1; b = (t - 0.66) / 0.34;
-                }
-                break;
-                
-            case 'cool':
-            case 'blue':
-                r = t * 0.8;
-                g = t;
-                b = 0.4 + t * 0.6;
-                break;
-                
             case 'hot':
                 if (t < 0.4) {
                     r = t / 0.4; g = 0; b = 0;
@@ -638,21 +839,10 @@ class SolarRadiation {
                 }
                 break;
                 
-            case 'rainbow':
-                const h = (1 - t) * 0.7;
-                const s = 1, l = 0.5;
-                const c = (1 - Math.abs(2 * l - 1)) * s;
-                const x = c * (1 - Math.abs((h * 6) % 2 - 1));
-                const m = l - c / 2;
-                
-                if (h < 1/6) { r = c; g = x; b = 0; }
-                else if (h < 2/6) { r = x; g = c; b = 0; }
-                else if (h < 3/6) { r = 0; g = c; b = x; }
-                else if (h < 4/6) { r = 0; g = x; b = c; }
-                else if (h < 5/6) { r = x; g = 0; b = c; }
-                else { r = c; g = 0; b = x; }
-                
-                r += m; g += m; b += m;
+            case 'cool':
+                r = t * 0.8;
+                g = t;
+                b = 0.4 + t * 0.6;
                 break;
                 
             default:
@@ -667,14 +857,15 @@ class SolarRadiation {
         
         const gradients = {
             viridis: 'linear-gradient(to right, #440154, #31688e, #35b779, #fde725)',
-            thermal: 'linear-gradient(to right, #000, #f00, #ff0, #fff)',
-            red: 'linear-gradient(to right, #000, #f00, #ff0, #fff)',
-            cool: 'linear-gradient(to right, #006, #0af, #fff)',
-            blue: 'linear-gradient(to right, #006, #0af, #fff)',
             hot: 'linear-gradient(to right, #000, #f00, #f80, #ff0)',
-            rainbow: 'linear-gradient(to right, #f00, #ff0, #0f0, #0ff, #00f)',
-            grayscale: 'linear-gradient(to right, #000, #fff)'
+            cool: 'linear-gradient(to right, #006, #0af, #fff)'
         };
+        
+        const factor = stats?.extrapolation_factor || 1;
+        const isExtrapolated = factor > 1.01;
+        const stepInfo = isExtrapolated 
+            ? `<div style="color: #888; font-size: 10px;">${stats.sampled_days}/${stats.total_days} дней (×${factor.toFixed(2)})</div>` 
+            : '';
         
         this.legendElement = document.createElement('div');
         this.legendElement.id = 'solar-legend';
@@ -689,12 +880,13 @@ class SolarRadiation {
             <div style="font-weight: 600; margin-bottom: 8px;">☀️ Sun Hours</div>
             <div style="height: 16px; border-radius: 4px; background: ${gradients[this.colorScale] || gradients.viridis}; margin-bottom: 4px;"></div>
             <div style="display: flex; justify-content: space-between; color: #666; margin-bottom: 8px;">
-                <span>${min} ч</span><span>${max} ч</span>
+                <span>${Math.round(min)} ч</span><span>${Math.round(max)} ч</span>
             </div>
             <div style="border-top: 1px solid #eee; padding-top: 8px; color: #666; font-size: 11px;">
                 <div>Точек: ${stats.total_faces?.toLocaleString()}</div>
-                <div>Среднее: ${stats.mean_hours?.toFixed(0)} ч</div>
+                <div>Среднее: ${Math.round(stats.mean_hours)} ч</div>
                 <div>Время: ${stats.time_seconds}s</div>
+                ${stepInfo}
             </div>
         `;
         
@@ -712,6 +904,14 @@ class SolarRadiation {
             this.legendElement.remove();
             this.legendElement = null;
         }
+        
+        // Убираем обработчик кликов и tooltip
+        this._removeClickHandler();
+        this._hideTooltip();
+        if (this.tooltip) {
+            this.tooltip.remove();
+            this.tooltip = null;
+        }
     }
     
     setColorScale(scale) {
@@ -723,6 +923,7 @@ class SolarRadiation {
     
     dispose() {
         this.clearVisualization();
+        clearTimeout(this._tooltipTimeout);
     }
 }
 

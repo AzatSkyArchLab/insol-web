@@ -53,8 +53,8 @@ class EditorToolbar {
                     <button class="dropdown-item" data-action="cfd-analysis">
                         <span>🌀</span> CFD Анализ
                     </button>
-                    <button class="dropdown-item" data-action="wind-load">
-                        <span>💨</span> Загрузить результат CFD
+                    <button class="dropdown-item" data-action="solar-radiation-menu">
+                        <span>☀️</span> Солнечная радиация
                     </button>
                 </div>
             </div>
@@ -83,11 +83,6 @@ class EditorToolbar {
                 </div>
             </div>
             <div class="tool-separator"></div>
-            <button class="tool-btn" data-action="solar-radiation" title="Solar Radiation (S)">
-                <span class="tool-icon">☀️</span>
-                <span class="tool-label">Солнце</span>
-            </button>
-            <div class="tool-separator"></div>
             <button class="tool-btn danger" data-tool="delete" title="Удалить (Del)">
                 <span class="tool-icon">🗑</span>
                 <span class="tool-label">Удалить</span>
@@ -103,18 +98,6 @@ class EditorToolbar {
                 this.setTool(btn.dataset.tool);
             });
         });
-
-        // Solar Radiation button
-        const solarBtn = this.element.querySelector('[data-action="solar-radiation"]');
-        if (solarBtn) {
-            solarBtn.addEventListener('click', (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                if (window.app?.controllers?.solarRadiation) {
-                    window.app.controllers.solarRadiation.togglePanel();
-                }
-            });
-        }
 
         this._initFileMenu();
         this._initDrawMenu();
@@ -188,9 +171,9 @@ class EditorToolbar {
                             window.showCFDPanel();
                         }
                         break;
-                    case 'wind-load':
-                        if (window.loadWindResults) {
-                            window.loadWindResults();
+                    case 'solar-radiation-menu':
+                        if (window.app?.controllers?.solarRadiation) {
+                            window.app.controllers.solarRadiation.showPanel();
                         }
                         break;
                 }

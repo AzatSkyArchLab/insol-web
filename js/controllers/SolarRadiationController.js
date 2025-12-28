@@ -1,9 +1,6 @@
 /**
- * ============================================
  * SolarRadiationController.js v4.0
  * UI контроллер Solar Radiation
- * Стиль как у CFD панели
- * ============================================
  */
 
 class SolarRadiationController {
@@ -66,6 +63,11 @@ class SolarRadiationController {
             this.panel.style.display = 'block';
             this.isVisible = true;
             this._updateBuildingCount();
+            
+            // Включаем click handler если есть результаты
+            if (this.solarRadiation && this.solarRadiation.resultMesh) {
+                this.solarRadiation._initClickHandler();
+            }
             return;
         }
         this._createPanel();
@@ -75,6 +77,12 @@ class SolarRadiationController {
     hidePanel() {
         if (this.panel) this.panel.style.display = 'none';
         this.isVisible = false;
+        
+        // Отключаем click handler для tooltip когда панель закрыта
+        if (this.solarRadiation) {
+            this.solarRadiation._removeClickHandler();
+            this.solarRadiation._hideTooltip();
+        }
     }
     
     togglePanel() {
@@ -96,7 +104,6 @@ class SolarRadiationController {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             font-size: 14px;
             z-index: 1000;
-            overflow: hidden;
             max-height: calc(100vh - 100px);
             display: flex;
             flex-direction: column;
@@ -111,6 +118,7 @@ class SolarRadiationController {
                 padding: 16px 20px;
                 border-bottom: 1px solid #eee;
                 cursor: move;
+                flex-shrink: 0;
             ">
                 <div style="display: flex; align-items: center; gap: 10px;">
                     <span style="font-size: 20px;">☀️</span>
@@ -128,7 +136,7 @@ class SolarRadiationController {
             </div>
             
             <!-- Content -->
-            <div style="padding: 16px 20px; overflow-y: auto; flex: 1;">
+            <div style="padding: 16px 20px; overflow-y: auto; flex: 1; min-height: 0;">
                 
                 <!-- 1. Выбранные здания -->
                 <div class="sr-section-header" style="color: #4A6CF7; font-weight: 600; font-size: 12px; margin-bottom: 12px; letter-spacing: 0.5px;">
@@ -302,7 +310,7 @@ class SolarRadiationController {
             </div>
             
             <!-- Footer buttons -->
-            <div style="padding: 16px 20px; border-top: 1px solid #eee;">
+            <div style="padding: 16px 20px; border-top: 1px solid #eee; flex-shrink: 0;">
                 <button id="sr-analyze" style="
                     width: 100%;
                     padding: 14px;
@@ -460,7 +468,7 @@ class SolarRadiationController {
         
         this._updateBuildingCount();
         
-        console.log(`[SolarRadiationController] Применено ${this.selectedBuildings.length} зданий`);
+        console.log('[SolarRadiationController] Применено', this.selectedBuildings.length, 'зданий');
     }
     
     _updateBuildingCount() {
@@ -567,13 +575,14 @@ class SolarRadiationController {
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
                     <div>Зданий: <b>${buildingCount}</b></div>
                     <div>Солнц: <b>${s.sun_vectors_count}</b></div>
-                    <div>Мин: <b>${s.min_hours} ч</b></div>
-                    <div>Макс: <b>${s.max_hours} ч</b></div>
-                    <div>Среднее: <b>${s.mean_hours?.toFixed(0)} ч</b></div>
+                    <div>Мин: <b>${Math.round(s.min_hours)} ч</b></div>
+                    <div>Макс: <b>${Math.round(s.max_hours)} ч</b></div>
+                    <div>Среднее: <b>${Math.round(s.mean_hours)} ч</b></div>
                     <div>Время: <b>${s.time_seconds}s</b></div>
                 </div>
                 <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(0,0,0,0.1); font-size: 12px; color: #666;">
                     Ground: ${s.ground_faces?.toLocaleString()} • Здания: ${s.building_faces?.toLocaleString()}
+                    ${s.extrapolation_factor > 1.01 ? `<br>${s.sampled_days}/${s.total_days} дней (×${s.extrapolation_factor.toFixed(2)})` : ''}
                 </div>
             `;
             container.style.display = 'block';
