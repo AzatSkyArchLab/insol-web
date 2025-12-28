@@ -6,11 +6,20 @@
  * - Хранение окон и балконов для каждой ячейки
  * - Создание 3D геометрии окон (заглубление) и балконов (выступ)
  * - Расчётные точки в центре окна
+ * - Collision mesh для быстрого raycasting
  */
+
+import { collisionMeshManager } from '../core/CollisionMeshManager.js';
 
 class CellFeaturesManager {
     constructor(scene) {
         this.scene = scene;
+        
+        // Ссылка на здание (устанавливается через setBuildingMesh или attachToBuilding)
+        this.buildingMesh = null;
+        
+        // Флаг отложенного rebuild (для batch операций)
+        this._pendingCollisionRebuild = false;
         
         console.log('[CellFeaturesManager] Constructor, scene:', !!scene, scene?.type);
         
@@ -75,6 +84,60 @@ class CellFeaturesManager {
         this.meshCache = new Map();  // cellKey -> { windowMesh, balconyMesh }
     }
     
+    // ============================================
+    // Collision Mesh Management
+    // ============================================
+    
+    /**
+     * Установить ссылку на здание
+     * @param {THREE.Mesh} mesh - меш здания
+     */
+    setBuildingMesh(mesh) {
+        this.buildingMesh = mesh;
+        if (mesh) {
+            mesh.userData._featuresManager = this;
+        }
+    }
+    
+    /**
+     * Пересобрать collision mesh для raycasting
+     * Вызывается после изменения окон/балконов
+     */
+    rebuildCollisionMesh() {
+        if (!this.buildingMesh) {
+            console.warn('[CellFeaturesManager] rebuildCollisionMesh: нет buildingMesh');
+            return;
+        }
+        
+        collisionMeshManager.rebuild(this.buildingMesh, this);
+        this._pendingCollisionRebuild = false;
+    }
+    
+    /**
+     * Отложить rebuild collision mesh (для batch операций)
+     * @private
+     */
+    _scheduleCollisionRebuild() {
+        if (!this._pendingCollisionRebuild) {
+            this._pendingCollisionRebuild = true;
+            // Используем microtask для выполнения после всех синхронных операций
+            queueMicrotask(() => {
+                if (this._pendingCollisionRebuild) {
+                    this.rebuildCollisionMesh();
+                }
+            });
+        }
+    }
+    
+    /**
+     * Принудительный rebuild сейчас (для интерактивных операций)
+     */
+    flushCollisionRebuild() {
+        if (this._pendingCollisionRebuild) {
+            this.rebuildCollisionMesh();
+        }
+    }
+    
     /**
      * Получить или создать features для ячейки
      */
@@ -128,6 +191,7 @@ class CellFeaturesManager {
         };
         
         this._updateCellMesh(cell);
+        this._scheduleCollisionRebuild();
         return features.window;
     }
     
@@ -148,6 +212,7 @@ class CellFeaturesManager {
         };
         
         this._updateCellMesh(cell);
+        this._scheduleCollisionRebuild();
         return features.balcony;
     }
     
@@ -157,6 +222,7 @@ class CellFeaturesManager {
     addWindowAndBalcony(cell, windowOptions = {}, balconyOptions = {}) {
         this.addWindow(cell, windowOptions);
         this.addBalcony(cell, balconyOptions);
+        // rebuild уже запланирован через addWindow/addBalcony
     }
     
     /**
@@ -178,6 +244,7 @@ class CellFeaturesManager {
         }
         console.log(`[CellFeaturesManager] Установлено ${count} окон, ошибок: ${errors}`);
         console.log('[CellFeaturesManager] featuresGroup has', this.featuresGroup.children.length, 'children');
+        if (count > 0) this._scheduleCollisionRebuild();
         return count;
     }
     
@@ -193,6 +260,7 @@ class CellFeaturesManager {
             count++;
         }
         console.log(`[CellFeaturesManager] Установлено ${count} балконов`);
+        if (count > 0) this._scheduleCollisionRebuild();
         return count;
     }
     
@@ -209,6 +277,7 @@ class CellFeaturesManager {
             count++;
         }
         console.log(`[CellFeaturesManager] Установлено ${count} окон+балконов`);
+        if (count > 0) this._scheduleCollisionRebuild();
         return count;
     }
     
@@ -225,6 +294,7 @@ class CellFeaturesManager {
             }
         }
         console.log(`[CellFeaturesManager] Удалено ${count} окон`);
+        if (count > 0) this._scheduleCollisionRebuild();
         return count;
     }
     
@@ -241,6 +311,7 @@ class CellFeaturesManager {
             }
         }
         console.log(`[CellFeaturesManager] Удалено ${count} балконов`);
+        if (count > 0) this._scheduleCollisionRebuild();
         return count;
     }
     
@@ -249,9 +320,10 @@ class CellFeaturesManager {
      */
     removeWindow(cellKey) {
         const features = this.cellFeatures.get(cellKey);
-        if (features) {
+        if (features && features.window) {
             features.window = null;
             this._removeCellMesh(cellKey, 'window');
+            this._scheduleCollisionRebuild();
         }
     }
     
@@ -260,9 +332,10 @@ class CellFeaturesManager {
      */
     removeBalcony(cellKey) {
         const features = this.cellFeatures.get(cellKey);
-        if (features) {
+        if (features && features.balcony) {
             features.balcony = null;
             this._removeCellMesh(cellKey, 'balcony');
+            this._scheduleCollisionRebuild();
         }
     }
     
@@ -270,9 +343,12 @@ class CellFeaturesManager {
      * Удалить всё из ячейки
      */
     removeAll(cellKey) {
+        const features = this.cellFeatures.get(cellKey);
+        const hadFeatures = features && (features.window || features.balcony);
         this.removeWindow(cellKey);
         this.removeBalcony(cellKey);
         this.cellFeatures.delete(cellKey);
+        // rebuild уже вызван в removeWindow/removeBalcony
     }
     
     /**
@@ -637,6 +713,9 @@ class CellFeaturesManager {
                 this._updateCellMesh(cell);
             }
         }
+        
+        // Обновляем collision mesh
+        this._scheduleCollisionRebuild();
     }
     
     /**
@@ -650,6 +729,9 @@ class CellFeaturesManager {
         }
         this.meshCache.clear();
         this.cellFeatures.clear();
+        
+        // Обновляем collision mesh (теперь только здание без features)
+        this._scheduleCollisionRebuild();
     }
     
     /**
@@ -700,6 +782,9 @@ class CellFeaturesManager {
     attachToBuilding(buildingMesh, cells) {
         if (!buildingMesh) return;
         
+        // Устанавливаем ссылку на здание
+        this.setBuildingMesh(buildingMesh);
+        
         // Удаляем временные меши из сцены (но НЕ данные cellFeatures!)
         while (this.featuresGroup.children.length > 0) {
             const child = this.featuresGroup.children[0];
@@ -718,6 +803,8 @@ class CellFeaturesManager {
         // Если нет features - выходим
         if (this.cellFeatures.size === 0) {
             console.log('[CellFeaturesManager] Нет features для сохранения');
+            // Всё равно rebuild - на случай если были features раньше
+            this._scheduleCollisionRebuild();
             return;
         }
         
@@ -750,6 +837,9 @@ class CellFeaturesManager {
         buildingMesh.add(featuresGroup);
         
         console.log(`[CellFeaturesManager] Прикреплено ${featuresGroup.children.length} мешей к зданию`);
+        
+        // Пересобираем collision mesh
+        this._scheduleCollisionRebuild();
     }
     
     /**

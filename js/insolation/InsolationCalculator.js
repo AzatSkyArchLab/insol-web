@@ -167,7 +167,7 @@ class InsolationCalculator {
     
     /**
      * Получить кэшированный список препятствий
-     * Кэш сбрасывается в calculatePoints() перед каждой серией расчётов
+     * Кэш сбрасывается в calculatePoints() перед каждой серии расчётов
      */
     _getCachedObstacles() {
         if (this._cachedObstacles) {
@@ -373,7 +373,12 @@ class InsolationCalculator {
     /**
      * Расчёт для одной точки
      */
-    calculatePoint(point, excludeMesh = null, normativeMinutes = null) {
+    calculatePoint(point, excludeMesh = null, normativeMinutes = null, forceRefreshCache = false) {
+        // Принудительно обновить кэш obstacles если требуется
+        if (forceRefreshCache) {
+            this._cachedObstacles = null;
+        }
+        
         const collision = this.checkRayCollisions(point.position, excludeMesh);
         const evaluation = this.evaluateInsolation(collision.free, normativeMinutes);
         

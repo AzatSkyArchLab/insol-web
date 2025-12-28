@@ -166,6 +166,9 @@ class BuildingCardController {
                 <span class="info-label">Других:</span>
                 <span class="info-value">${meshes.length - residentialCount}</span>
             </div>
+            <div style="margin-top: 8px; font-size: 11px; color: #666;">
+                Нажмите 🗑 или Del для удаления
+            </div>
         `;
         multiInfo.style.display = '';
         

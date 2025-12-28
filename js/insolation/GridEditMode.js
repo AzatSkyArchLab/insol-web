@@ -113,6 +113,9 @@ class GridEditMode {
             console.log('[GridEditMode] Created new featuresManager');
         }
         
+        // Устанавливаем связь с mesh для collision mesh
+        this.featuresManager.setBuildingMesh(mesh);
+        
         // Удаляем прикреплённые меши features (будем показывать временные)
         const existingFeaturesGroup = mesh.children.find(c => c.name === 'buildingFeatures');
         if (existingFeaturesGroup) {
@@ -141,6 +144,9 @@ class GridEditMode {
         
         // Перестраиваем 3D объекты окон/балконов
         this.featuresManager.rebuildAllMeshes(this.cells);
+        
+        // Принудительно создаём collision mesh сразу
+        this.featuresManager.flushCollisionRebuild();
         
         if (this.sceneManager.controls) {
             this.sceneManager.controls.enabled = false;
@@ -224,6 +230,8 @@ class GridEditMode {
         // Сохраняем featuresManager в mesh для использования вне режима редактирования
         if (this.activeMesh && this.featuresManager) {
             this.activeMesh.userData._featuresManager = this.featuresManager;
+            // Принудительно создаём collision mesh перед выходом
+            this.featuresManager.flushCollisionRebuild();
             // НЕ очищаем меши - они должны остаться видимыми
         }
         

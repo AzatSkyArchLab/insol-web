@@ -280,6 +280,9 @@ class InsolationController {
                 console.log('[InsolationController] Created new featuresManager');
             }
             
+            // Устанавливаем связь с mesh для collision mesh
+            featuresManager.setBuildingMesh(mesh);
+            
             if (!featuresManager) {
                 console.log('[InsolationController] No featuresManager, skipping');
                 continue;
@@ -311,10 +314,14 @@ class InsolationController {
             }
             // 'none' - ничего не делаем
             
+            // Принудительно создаём collision mesh СЕЙЧАС (не ждём microtask)
+            featuresManager.flushCollisionRebuild();
+            
             // Проверяем результат
             console.log('[InsolationController] After apply: featuresGroup children:', 
                 featuresManager.featuresGroup.children.length,
-                'parent:', featuresManager.featuresGroup.parent?.type);
+                'parent:', featuresManager.featuresGroup.parent?.type,
+                'collisionMesh:', !!mesh.userData.collisionMesh);
             
             if (featuresManager.featuresGroup.children.length > 0) {
                 const firstChild = featuresManager.featuresGroup.children[0];

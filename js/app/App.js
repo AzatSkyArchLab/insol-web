@@ -158,6 +158,11 @@ class App {
             if (e.code === 'Escape' && state.mapMeasureTool?.enabled) {
                 state.mapMeasureTool.clear();
             }
+            
+            // Удаление выбранных зданий по Delete/Backspace
+            if ((e.code === 'Delete' || e.code === 'Backspace') && !e.target.matches('input, textarea')) {
+                this._deleteSelectedBuilding();
+            }
         });
     }
     
@@ -644,12 +649,13 @@ class App {
         
         state.solarPotential = new SolarPotential(
             sm, state.insolationCalculator, state.insolationGrid, {
-                cellSize: 6,
+                cellSize: 12,       // 12×12м ячейки
+                heightStep: 3,      // Шаг роста 3м
                 maxHeight: 75,
-                animationDelay: 10,
+                animationDelay: 50, // Для визуализации роста
                 onProgress: (progress, iteration) => {},
                 onComplete: (stats) => {
-                    alert(`Потенциал рассчитан!\n\nПлощадь: ${stats.totalArea.toFixed(0)} м²\nОбъём: ${stats.totalVolume.toFixed(0)} м³`);
+                    alert(`Потенциал рассчитан!\n\nКолонок: ${stats.columnCount}\nПлощадь: ${stats.totalArea.toFixed(0)} м²\nОбъём: ${stats.totalVolume.toFixed(0)} м³\nМакс. высота: ${stats.maxHeight.toFixed(0)} м`);
                 }
             }
         );
@@ -840,47 +846,84 @@ class App {
             const id = state.measureRenderer3D.selectedId;
             if (confirm(`Удалить измерение #${id}?`)) {
                 state.measureRenderer3D.remove(id);
-                // Синхронизация с mapMeasureTool уже внутри remove()
             }
             return;
         }
         
         if (!state.selectTool) return;
         
-        const mesh = state.selectTool.getSelected();
-        if (!mesh) {
+        // Собираем все выбранные здания
+        let meshesToDelete = [];
+        
+        // Множественный выбор
+        if (state.selectTool.selectedItems?.size > 0) {
+            meshesToDelete = Array.from(state.selectTool.selectedItems.values())
+                .filter(item => item.type === 'building')
+                .map(item => item.item);
+        }
+        // Одиночный выбор
+        else if (state.selectTool.selectedMesh) {
+            meshesToDelete = [state.selectTool.selectedMesh];
+        }
+        
+        if (meshesToDelete.length === 0) {
             alert('Сначала выберите здание или измерение');
             return;
         }
         
-        if (!confirm(`Удалить здание ${mesh.userData.id}?`)) return;
+        // Подтверждение
+        const confirmMsg = meshesToDelete.length === 1 
+            ? `Удалить здание ${meshesToDelete[0].userData.id}?`
+            : `Удалить ${meshesToDelete.length} зданий?`;
+        
+        if (!confirm(confirmMsg)) return;
         
         if (state.moveTool) state.moveTool.forceReset();
         
-        const meshId = mesh.userData.id;
+        const group = state.sceneManager.getBuildingsGroup();
+        const deletedIds = [];
         
-        // Очистка инсоляционной сетки для этого здания
-        if (state.insolationGrid) {
-            state.insolationGrid.removeGridForMesh(mesh);
+        for (const mesh of meshesToDelete) {
+            const meshId = mesh.userData.id;
+            deletedIds.push(meshId);
             
-            // Сбрасываем результаты если это было активное здание
-            if (state.insolationGrid.isMeshActive(mesh)) {
-                state.lastCalculatedPoints = null;
-                state.lastActiveMeshes = null;
-                state.lastCalculationResults = null;
-                bus.emit('insolation:cleared');
+            // Очистка инсоляционной сетки для этого здания
+            if (state.insolationGrid) {
+                state.insolationGrid.removeGridForMesh(mesh);
+                
+                if (state.insolationGrid.isMeshActive(mesh)) {
+                    state.lastCalculatedPoints = null;
+                    state.lastActiveMeshes = null;
+                    state.lastCalculationResults = null;
+                    bus.emit('insolation:cleared');
+                }
+            }
+            
+            // Удаление меша
+            group.remove(mesh);
+            if (mesh.geometry) mesh.geometry.dispose();
+            if (mesh.material) {
+                if (Array.isArray(mesh.material)) {
+                    mesh.material.forEach(m => m.dispose());
+                } else {
+                    mesh.material.dispose();
+                }
             }
         }
         
-        // Удаление меша
-        const group = state.sceneManager.getBuildingsGroup();
-        group.remove(mesh);
-        mesh.geometry.dispose();
-        mesh.material.dispose();
+        // Сбрасываем кэш инсоляции
+        if (state.insolationCalculator) {
+            state.insolationCalculator.invalidateObstaclesCache();
+        }
         
         state.selectTool.deselect();
         bus.emit('building:deselected');
-        bus.emit('building:deleted', { meshId });
+        
+        console.log(`[App] Удалено ${deletedIds.length} зданий:`, deletedIds);
+        
+        for (const meshId of deletedIds) {
+            bus.emit('building:deleted', { meshId });
+        }
     }
     
     // ============================================

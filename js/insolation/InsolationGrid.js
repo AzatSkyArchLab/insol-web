@@ -20,7 +20,7 @@ class InsolationGrid {
         this.horizontalStep = options.horizontalStep || 3.0;
         this.horizontalMaxStep = options.horizontalMaxStep || 3.3;
         this.minCellHeight = options.minCellHeight || 2.5;  // Минимальная высота ячейки для точек
-        this.offset = options.offset || 0.01;
+        this.offset = options.offset || 0.03;
         this.pointSize = options.pointSize || 0.5;
         
         // Визуальные элементы

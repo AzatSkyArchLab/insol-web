@@ -86,6 +86,10 @@ class EditorToolbar {
                     </button>
                 </div>
             </div>
+            <button class="tool-btn" data-tool="potential" title="Инсоляционная горка (P)">
+                <span class="tool-icon">⛰️</span>
+                <span class="tool-label">Горка</span>
+            </button>
             <div class="tool-separator"></div>
             <button class="tool-btn danger" data-tool="delete" title="Удалить (Del)">
                 <span class="tool-icon">🗑</span>
@@ -122,6 +126,7 @@ class EditorToolbar {
                 case 'KeyM': this.setTool('move'); break;
                 case 'KeyD': this.setTool('draw'); break;
                 case 'KeyR': this.setTool('measure'); break;
+                case 'KeyP': this.setTool('potential'); break;
                 case 'KeyS': 
                     // Solar Radiation toggle
                     if (window.app?.controllers?.solarRadiation) {
