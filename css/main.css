@@ -1014,3 +1014,479 @@ button:disabled {
     color: var(--accent);
     min-width: 40px;
 }
+/* ============================================
+   Map Layer Switcher
+   ============================================ */
+
+#map-layer-switcher,
+#scene-layer-switcher {
+    position: absolute;
+    top: 16px;
+    right: 60px;
+    display: flex;
+    gap: 2px;
+    background: var(--bg);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: 4px;
+    z-index: 10;
+}
+
+#scene-layer-switcher {
+    right: 16px;
+}
+
+.layer-btn {
+    width: 36px;
+    height: 36px;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    color: var(--text-secondary);
+    border-radius: var(--radius-sm);
+    transition: all 0.15s ease;
+}
+
+.layer-btn:hover {
+    background: var(--bg-tertiary);
+    color: var(--text);
+}
+
+.layer-btn.active {
+    background: var(--accent);
+    color: white;
+}
+
+.layer-btn.active:hover {
+    background: var(--accent-hover);
+}
+
+.layer-btn svg {
+    width: 18px;
+    height: 18px;
+}
+
+/* ============================================
+   Map Measure Button
+   ============================================ */
+
+#map-measure-btn-container {
+    position: absolute;
+    top: 16px;
+    right: 156px;
+    z-index: 10;
+}
+
+#map-measure-btn {
+    width: 36px;
+    height: 36px;
+    background: var(--bg);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+}
+
+#map-measure-btn.active {
+    background: var(--accent);
+    color: white;
+}
+
+/* ============================================
+   Map Measure Panel
+   ============================================ */
+
+#map-measure-panel {
+    position: absolute;
+    bottom: 24px;
+    left: 16px;
+    width: 240px;
+    background: var(--bg);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-lg);
+    z-index: 20;
+    display: none;
+    overflow: hidden;
+}
+
+#map-measure-panel.visible {
+    display: block;
+}
+
+.measure-panel-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 12px;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
+    font-weight: 600;
+    font-size: 13px;
+}
+
+.measure-close-btn {
+    background: transparent;
+    color: var(--text-tertiary);
+    padding: 2px 6px;
+    font-size: 14px;
+}
+
+.measure-close-btn:hover {
+    color: var(--text);
+}
+
+.measure-mode-btns {
+    display: flex;
+    padding: 8px;
+    gap: 4px;
+}
+
+.measure-mode-btn {
+    flex: 1;
+    padding: 6px 8px;
+    font-size: 12px;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+}
+
+.measure-mode-btn.active {
+    background: var(--accent);
+    color: white;
+}
+
+.measure-info {
+    padding: 8px 12px;
+    font-size: 13px;
+    border-bottom: 1px solid var(--border);
+    min-height: 40px;
+}
+
+.measure-hint {
+    color: var(--text-tertiary);
+    font-size: 12px;
+}
+
+.measure-current {
+    color: var(--text);
+}
+
+.measure-actions {
+    display: flex;
+    padding: 8px;
+    gap: 4px;
+}
+
+.measure-action-btn {
+    flex: 1;
+    padding: 6px 8px;
+    font-size: 11px;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+}
+
+.measure-action-btn:hover:not(:disabled) {
+    background: var(--border);
+}
+
+.measure-action-btn:disabled {
+    opacity: 0.4;
+}
+
+.measure-list {
+    max-height: 150px;
+    overflow-y: auto;
+    border-top: 1px solid var(--border);
+}
+
+.measure-list-title {
+    padding: 6px 12px;
+    font-size: 11px;
+    color: var(--text-tertiary);
+    background: var(--bg-secondary);
+}
+
+.measure-list-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 6px 12px;
+    font-size: 12px;
+    border-bottom: 1px solid var(--bg-tertiary);
+}
+
+.measure-list-item:hover {
+    background: var(--bg-secondary);
+}
+
+.measure-delete-btn {
+    background: transparent;
+    color: var(--text-tertiary);
+    padding: 2px 4px;
+    font-size: 10px;
+    opacity: 0;
+    transition: opacity 0.15s;
+}
+
+.measure-list-item:hover .measure-delete-btn {
+    opacity: 1;
+}
+
+.measure-delete-btn:hover {
+    color: var(--error);
+}
+
+.map-measure-label {
+    position: absolute;
+    background: rgba(255, 68, 68, 0.9);
+    color: white;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-weight: 500;
+    white-space: nowrap;
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+}
+
+/* ============================================
+   Scene View Controls (сетка, сдвиг тайлов)
+   ============================================ */
+
+#scene-view-controls {
+    position: absolute;
+    bottom: 16px;
+    left: 16px;
+    background: var(--bg);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: 8px;
+    z-index: 50;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 180px;
+}
+
+.view-control-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.view-control-label {
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.view-control-toggle {
+    width: 36px;
+    height: 20px;
+    border-radius: 10px;
+    background: var(--border);
+    position: relative;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.view-control-toggle.active {
+    background: var(--accent);
+}
+
+.view-control-toggle::after {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: white;
+    transition: left 0.2s;
+}
+
+.view-control-toggle.active::after {
+    left: 18px;
+}
+
+.tile-offset-controls {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding-top: 4px;
+    border-top: 1px solid var(--border);
+}
+
+.tile-offset-row {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.tile-offset-row label {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    width: 16px;
+}
+
+.tile-offset-row input[type="range"] {
+    flex: 1;
+    height: 4px;
+}
+
+.tile-offset-row .offset-value {
+    font-size: 11px;
+    color: var(--accent);
+    width: 40px;
+    text-align: right;
+}
+
+.tile-offset-reset {
+    font-size: 11px;
+    padding: 4px 8px;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    align-self: flex-end;
+}
+
+/* ============================================
+   3D Measure Labels
+   ============================================ */
+
+.measure-3d-label {
+    position: absolute;
+    background: rgba(255, 68, 68, 0.9);
+    color: white;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+    text-align: center;
+    white-space: nowrap;
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+}
+
+.measure-3d-label span {
+    font-size: 10px;
+    opacity: 0.8;
+}
+
+.measure-3d-label.selected {
+    background: rgba(0, 200, 0, 0.9);
+    box-shadow: 0 0 10px rgba(0, 255, 0, 0.5);
+}
+
+/* ============================================
+   3D Measure Tool Panel
+   ============================================ */
+
+#measure-tool-panel {
+    position: absolute;
+    bottom: 16px;
+    left: 16px;
+    width: 220px;
+    background: var(--bg);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-lg);
+    z-index: 60;
+    display: none;
+    overflow: hidden;
+}
+
+#measure-tool-panel.visible {
+    display: block;
+}
+
+#measure-tool-panel .measure-panel-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 12px;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
+    font-weight: 600;
+    font-size: 13px;
+}
+
+#measure-tool-panel .measure-close-btn {
+    background: transparent;
+    color: var(--text-tertiary);
+    padding: 2px 6px;
+    font-size: 14px;
+}
+
+#measure-tool-panel .measure-close-btn:hover {
+    color: var(--text);
+}
+
+#measure-tool-panel .measure-mode-btns {
+    display: flex;
+    padding: 8px;
+    gap: 4px;
+}
+
+#measure-tool-panel .measure-mode-btn {
+    flex: 1;
+    padding: 6px 8px;
+    font-size: 12px;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+}
+
+#measure-tool-panel .measure-mode-btn.active {
+    background: var(--accent);
+    color: white;
+}
+
+#measure-tool-panel .measure-info {
+    padding: 8px 12px;
+    font-size: 13px;
+    border-bottom: 1px solid var(--border);
+    min-height: 40px;
+}
+
+#measure-tool-panel .measure-hint {
+    color: var(--text-tertiary);
+    font-size: 12px;
+}
+
+#measure-tool-panel .measure-stats {
+    color: var(--text);
+    line-height: 1.5;
+}
+
+#measure-tool-panel .measure-actions {
+    display: flex;
+    padding: 8px;
+    gap: 4px;
+}
+
+#measure-tool-panel .measure-action-btn {
+    flex: 1;
+    padding: 6px 8px;
+    font-size: 11px;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+}
+
+#measure-tool-panel .measure-action-btn:hover:not(:disabled) {
+    background: var(--border);
+}
+
+#measure-tool-panel .measure-action-btn:disabled {
+    opacity: 0.4;
+}
+
+#scene-view-controls.hidden {
+    display: none;
+}

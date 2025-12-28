@@ -67,6 +67,10 @@ class EditorToolbar {
                 <span class="tool-icon">✥</span>
                 <span class="tool-label">Двигать</span>
             </button>
+            <button class="tool-btn" data-tool="measure" title="Линейка (R)">
+                <span class="tool-icon">📏</span>
+                <span class="tool-label">Линейка</span>
+            </button>
             <div class="draw-menu">
                 <button class="tool-btn draw-menu-btn" title="Рисовать (D)">
                     <span class="tool-icon">✏</span>
@@ -117,6 +121,7 @@ class EditorToolbar {
                 case 'KeyV': this.setTool('select'); break;
                 case 'KeyM': this.setTool('move'); break;
                 case 'KeyD': this.setTool('draw'); break;
+                case 'KeyR': this.setTool('measure'); break;
                 case 'KeyS': 
                     // Solar Radiation toggle
                     if (window.app?.controllers?.solarRadiation) {

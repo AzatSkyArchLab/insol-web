@@ -14,7 +14,7 @@ import { AppState } from './AppState.js';
 // Core
 import { Coordinates } from '../core/Coordinates.js';
 import { MapEngine } from '../core/MapEngine.js';
-import { SceneManager } from '../core/SceneManager.js';
+import { SceneManager } from '../core/SceneManager_NEW.js';
 
 // Buildings
 import { BuildingLoader } from '../buildings/BuildingLoader.js';
@@ -29,6 +29,9 @@ import { DrawTool } from '../editor/DrawTool.js';
 import { RectTool } from '../editor/RectTool.js';
 import { MoveTool } from '../editor/MoveTool.js';
 import { Compass } from '../editor/Compass.js';
+import { MeasureTool } from '../editor/MeasureTool.js';
+import { MapMeasureTool } from '../editor/MapMeasureTool.js';
+import { MeasureRenderer3D } from '../editor/MeasureRenderer3D.js';
 
 // Insolation
 import { InsolationGrid } from '../insolation/InsolationGrid.js';
@@ -120,7 +123,41 @@ class App {
                 }
             });
             
+            // Инициализация линейки на карте
+            state.mapMeasureTool = new MapMeasureTool(state.mapEngine);
+            this._initMapMeasureButton();
+            
             console.log('[App] Карта готова');
+        });
+    }
+    
+    /**
+     * Инициализация кнопки линейки на карте
+     */
+    _initMapMeasureButton() {
+        const { state } = this;
+        const btn = document.getElementById('map-measure-btn');
+        if (!btn) return;
+        
+        btn.addEventListener('click', () => {
+            const isActive = btn.classList.toggle('active');
+            
+            if (isActive) {
+                state.mapMeasureTool.enable();
+                // Выключаем режим выбора области если активен
+                if (state.selectModeActive) {
+                    this.onSelectModeClick();
+                }
+            } else {
+                state.mapMeasureTool.disable();
+            }
+        });
+        
+        // Очистка по Escape
+        document.addEventListener('keydown', (e) => {
+            if (e.code === 'Escape' && state.mapMeasureTool?.enabled) {
+                state.mapMeasureTool.clear();
+            }
         });
     }
     
@@ -136,6 +173,172 @@ class App {
         
         document.getElementById('back-btn')
             .addEventListener('click', () => this.onBackClick());
+        
+        // Переключатель слоёв карты
+        this._initLayerSwitchers();
+    }
+    
+    /**
+     * Инициализация переключателей слоёв
+     */
+    _initLayerSwitchers() {
+        const { state } = this;
+        
+        // Переключатель на карте
+        const mapSwitcher = document.getElementById('map-layer-switcher');
+        if (mapSwitcher) {
+            mapSwitcher.querySelectorAll('.layer-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const layer = btn.dataset.layer;
+                    
+                    // Обновляем UI
+                    mapSwitcher.querySelectorAll('.layer-btn').forEach(b => b.classList.remove('active'));
+                    btn.classList.add('active');
+                    
+                    // Переключаем карту с callback для восстановления слоёв
+                    if (state.mapEngine) {
+                        state.mapEngine.setMapSource(layer, () => {
+                            // Восстанавливаем слои линейки если есть измерения или она активна
+                            if (state.mapMeasureTool && (state.mapMeasureTool.enabled || state.mapMeasureTool.measurements.length > 0)) {
+                                state.mapMeasureTool._initLayers();
+                                state.mapMeasureTool._updateLayers();
+                                state.mapMeasureTool._updateAllLabelPositions();
+                            }
+                            // Восстанавливаем AreaSelector если активен
+                            if (state.areaSelector) {
+                                state.areaSelector._restoreLayers?.();
+                            }
+                        });
+                    }
+                    
+                    // Синхронизируем с переключателем сцены
+                    this._syncLayerSwitcher('scene-layer-switcher', layer);
+                    
+                    // Сохраняем в state
+                    state.currentMapSource = layer;
+                });
+            });
+        }
+        
+        // Переключатель в 3D-сцене
+        const sceneSwitcher = document.getElementById('scene-layer-switcher');
+        if (sceneSwitcher) {
+            sceneSwitcher.querySelectorAll('.layer-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const layer = btn.dataset.layer;
+                    
+                    // Обновляем UI
+                    sceneSwitcher.querySelectorAll('.layer-btn').forEach(b => b.classList.remove('active'));
+                    btn.classList.add('active');
+                    
+                    // Переключаем тайлы сцены
+                    if (state.sceneManager) {
+                        state.sceneManager.setTileSource(layer);
+                    }
+                    
+                    // Синхронизируем с переключателем карты
+                    this._syncLayerSwitcher('map-layer-switcher', layer);
+                    
+                    // Сохраняем в state
+                    state.currentMapSource = layer;
+                });
+            });
+        }
+    }
+    
+    /**
+     * Синхронизация переключателей слоёв
+     */
+    _syncLayerSwitcher(switcherId, layer) {
+        const switcher = document.getElementById(switcherId);
+        if (switcher) {
+            switcher.querySelectorAll('.layer-btn').forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.layer === layer);
+            });
+        }
+    }
+    
+    /**
+     * Инициализация контролов вида (сетка, сдвиг тайлов)
+     */
+    _initViewControls() {
+        const { state } = this;
+        
+        // Переключатель сетки
+        const gridToggle = document.getElementById('grid-toggle');
+        if (gridToggle) {
+            gridToggle.addEventListener('click', () => {
+                gridToggle.classList.toggle('active');
+                const visible = gridToggle.classList.contains('active');
+                if (state.sceneManager) {
+                    state.sceneManager.toggleHelpers(visible);
+                }
+            });
+        }
+        
+        // Сдвиг тайлов X
+        const offsetX = document.getElementById('tile-offset-x');
+        const offsetXVal = document.getElementById('tile-offset-x-val');
+        if (offsetX) {
+            offsetX.addEventListener('input', () => {
+                const x = parseFloat(offsetX.value);
+                const y = parseFloat(document.getElementById('tile-offset-y').value);
+                offsetXVal.textContent = `${x} м`;
+                if (state.sceneManager) {
+                    state.sceneManager.setTileOffset(x, y);
+                }
+            });
+        }
+        
+        // Сдвиг тайлов Y
+        const offsetY = document.getElementById('tile-offset-y');
+        const offsetYVal = document.getElementById('tile-offset-y-val');
+        if (offsetY) {
+            offsetY.addEventListener('input', () => {
+                const x = parseFloat(document.getElementById('tile-offset-x').value);
+                const y = parseFloat(offsetY.value);
+                offsetYVal.textContent = `${y} м`;
+                if (state.sceneManager) {
+                    state.sceneManager.setTileOffset(x, y);
+                }
+            });
+        }
+        
+        // Кнопка сброса
+        const resetBtn = document.getElementById('tile-offset-reset');
+        if (resetBtn) {
+            resetBtn.addEventListener('click', () => {
+                document.getElementById('tile-offset-x').value = 0;
+                document.getElementById('tile-offset-y').value = 0;
+                document.getElementById('tile-offset-x-val').textContent = '0 м';
+                document.getElementById('tile-offset-y-val').textContent = '0 м';
+                if (state.sceneManager) {
+                    state.sceneManager.setTileOffset(0, 0);
+                }
+            });
+        }
+    }
+    
+    /**
+     * Инициализация рендерера измерений
+     */
+    _initMeasureRenderer() {
+        const { state } = this;
+        
+        // Создаём рендерер
+        state.measureRenderer3D = new MeasureRenderer3D(state.sceneManager, state.coords);
+        
+        // Загружаем измерения с карты если есть
+        if (state.mapMeasureTool?.measurements?.length > 0) {
+            state.measureRenderer3D.loadFromMap(state.mapMeasureTool.measurements);
+        }
+        
+        // Обновляем метки при движении камеры
+        state.sceneManager.controls.addEventListener('change', () => {
+            if (state.measureRenderer3D) {
+                state.measureRenderer3D.updateLabels();
+            }
+        });
     }
     
     /**
@@ -199,6 +402,12 @@ class App {
         
         state.sceneManager.coordinates = state.coords;
         state.sceneManager.setAreaSize(widthM, heightM);
+        
+        // Устанавливаем источник тайлов из текущего состояния
+        const currentSource = state.currentMapSource || 'osm';
+        state.sceneManager.tileSource = currentSource;
+        this._syncLayerSwitcher('scene-layer-switcher', currentSource);
+        
         state.sceneManager.loadGroundTile(bounds);
         
         // Создание мешей
@@ -214,6 +423,15 @@ class App {
         this._initTools();
         this._initInsolation();
         this._initProjectIO();
+        this._initViewControls();
+        
+        // Загрузка измерений с карты
+        this._initMeasureRenderer();
+        
+        // Связываем MeasureTool с MeasureRenderer3D
+        if (state.measureTool && state.measureRenderer3D) {
+            state.measureTool.setRenderer(state.measureRenderer3D);
+        }
         
         // Обновление UI
         const residentialCount = buildings.filter(b => b.properties.isResidential).length;
@@ -307,6 +525,16 @@ class App {
                     if (state.solarPotential) {
                         state.solarPotential.deselect();
                     }
+                    if (state.measureRenderer3D) {
+                        state.measureRenderer3D.deselect();
+                    }
+                    return;
+                }
+                
+                // Измерения
+                if (data.type === 'measurement' && state.measureRenderer3D) {
+                    state.measureRenderer3D.select(data.measureId);
+                    bus.emit('measurement:selected', { id: data.measureId, data });
                     return;
                 }
                 
@@ -318,11 +546,17 @@ class App {
                 if (state.solarPotential) {
                     state.solarPotential.deselect();
                 }
+                if (state.measureRenderer3D) {
+                    state.measureRenderer3D.deselect();
+                }
                 bus.emit('building:selected', { data, mesh });
             },
             onMultiSelect: (meshes) => {
                 if (state.solarPotential) {
                     state.solarPotential.deselect();
+                }
+                if (state.measureRenderer3D) {
+                    state.measureRenderer3D.deselect();
                 }
                 bus.emit('building:multiselect', { meshes });
             }
@@ -377,6 +611,9 @@ class App {
             state.compass.init();
             state.compass.updateFromControls(sm.controls);
         }, 0);
+        
+        // MeasureTool
+        state.measureTool = new MeasureTool(sm);
     }
     
     /**
@@ -471,10 +708,14 @@ class App {
         if (state.moveTool) state.moveTool.disable();
         if (state.heightEditor) state.heightEditor.deactivate();
         if (state.selectTool) state.selectTool.setEnabled(false);
+        if (state.measureTool) state.measureTool.disable();
         
         if (state.sceneManager?.controls) {
             state.sceneManager.controls.enabled = true;
         }
+        
+        // Показываем панель управления видом
+        document.getElementById('scene-view-controls')?.classList.remove('hidden');
         
         switch (tool) {
             case 'select':
@@ -491,6 +732,19 @@ class App {
                     state.heightEditor.deactivate();
                 }
                 if (state.moveTool) state.moveTool.enable();
+                break;
+                
+            case 'measure':
+                bus.emit('building:deselected');
+                state.potentialMode = false;
+                state.generationMode = false;
+                if (state.measureTool) state.measureTool.enable();
+                // Отключаем вращение камеры чтобы клики проходили к линейке
+                if (state.sceneManager?.controls) {
+                    state.sceneManager.controls.enabled = false;
+                }
+                // Скрываем панель управления видом
+                document.getElementById('scene-view-controls')?.classList.add('hidden');
                 break;
                 
             case 'draw':
@@ -581,11 +835,21 @@ class App {
     _deleteSelectedBuilding() {
         const { state, bus } = this;
         
+        // Сначала проверяем выбранное измерение
+        if (state.measureRenderer3D?.selectedId !== null) {
+            const id = state.measureRenderer3D.selectedId;
+            if (confirm(`Удалить измерение #${id}?`)) {
+                state.measureRenderer3D.remove(id);
+                // Синхронизация с mapMeasureTool уже внутри remove()
+            }
+            return;
+        }
+        
         if (!state.selectTool) return;
         
         const mesh = state.selectTool.getSelected();
         if (!mesh) {
-            alert('Сначала выберите здание');
+            alert('Сначала выберите здание или измерение');
             return;
         }
         

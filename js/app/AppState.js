@@ -46,6 +46,9 @@ class AppState {
         /** @type {boolean} */
         this.selectModeActive = false;
         
+        /** @type {string} - текущий источник карты: 'osm' | 'esri' */
+        this.currentMapSource = 'osm';
+        
         // ============================================
         // Editor Tools — инструменты редактирования
         // ============================================
@@ -70,6 +73,15 @@ class AppState {
         
         /** @type {Compass|null} */
         this.compass = null;
+        
+        /** @type {MeasureTool|null} */
+        this.measureTool = null;
+        
+        /** @type {MapMeasureTool|null} */
+        this.mapMeasureTool = null;
+        
+        /** @type {MeasureRenderer3D|null} */
+        this.measureRenderer3D = null;
         
         // ============================================
         // Insolation — инсоляция

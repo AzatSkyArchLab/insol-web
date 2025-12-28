@@ -29,6 +29,32 @@
     <div id="map-mode">
         <div id="map"></div>
         
+        <!-- Переключатель слоёв карты -->
+        <div id="map-layer-switcher">
+            <button class="layer-btn active" data-layer="osm" title="OpenStreetMap">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M3 7l6 -3l6 3l6 -3v13l-6 3l-6 -3l-6 3v-13"/>
+                    <path d="M9 4v13"/>
+                    <path d="M15 7v13"/>
+                </svg>
+            </button>
+            <button class="layer-btn" data-layer="esri" title="Спутник (ESRI)">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10"/>
+                    <path d="M12 2a15 15 0 0 1 4 10a15 15 0 0 1 -4 10"/>
+                    <path d="M12 2a15 15 0 0 0 -4 10a15 15 0 0 0 4 10"/>
+                    <path d="M2 12h20"/>
+                </svg>
+            </button>
+        </div>
+        
+        <!-- Кнопка линейки на карте -->
+        <div id="map-measure-btn-container">
+            <button id="map-measure-btn" class="layer-btn" title="Линейка">
+                <span style="font-size: 16px;">📏</span>
+            </button>
+        </div>
+        
         <div id="info-panel">
             <h3>Insol Web</h3>
             <p>Выберите область для анализа</p>
@@ -41,6 +67,47 @@
     <!-- Режим 2: 3D-сцена -->
     <div id="scene-mode" class="hidden">
         <div id="scene-container"></div>
+        
+        <!-- Переключатель слоёв в 3D-сцене -->
+        <div id="scene-layer-switcher">
+            <button class="layer-btn active" data-layer="osm" title="OpenStreetMap">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M3 7l6 -3l6 3l6 -3v13l-6 3l-6 -3l-6 3v-13"/>
+                    <path d="M9 4v13"/>
+                    <path d="M15 7v13"/>
+                </svg>
+            </button>
+            <button class="layer-btn" data-layer="esri" title="Спутник (ESRI)">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10"/>
+                    <path d="M12 2a15 15 0 0 1 4 10a15 15 0 0 1 -4 10"/>
+                    <path d="M12 2a15 15 0 0 0 -4 10a15 15 0 0 0 4 10"/>
+                    <path d="M2 12h20"/>
+                </svg>
+            </button>
+        </div>
+        
+        <!-- Панель управления видом -->
+        <div id="scene-view-controls">
+            <div class="view-control-row">
+                <span class="view-control-label">Сетка</span>
+                <div class="view-control-toggle active" id="grid-toggle" title="Показать/скрыть сетку"></div>
+            </div>
+            <div class="tile-offset-controls">
+                <div class="view-control-label">Сдвиг тайлов:</div>
+                <div class="tile-offset-row">
+                    <label>X</label>
+                    <input type="range" id="tile-offset-x" min="-50" max="50" value="0" step="1">
+                    <span class="offset-value" id="tile-offset-x-val">0 м</span>
+                </div>
+                <div class="tile-offset-row">
+                    <label>Y</label>
+                    <input type="range" id="tile-offset-y" min="-50" max="50" value="0" step="1">
+                    <span class="offset-value" id="tile-offset-y-val">0 м</span>
+                </div>
+                <button class="tile-offset-reset" id="tile-offset-reset">Сбросить</button>
+            </div>
+        </div>
         
         <div id="scene-panel">
             <h3>3D Модель</h3>

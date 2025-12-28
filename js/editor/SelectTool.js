@@ -68,6 +68,15 @@ class SelectTool {
             return false;
         });
         
+        // Добавляем измерения
+        const measureGroup = this.sceneManager.getMeasurementsGroup?.();
+        if (measureGroup) {
+            const measurements = measureGroup.children.filter(child => 
+                child.visible && child.userData.type === 'measurement'
+            );
+            buildings.push(...measurements);
+        }
+        
         if (buildings.length === 0) return null;
         
         const intersects = this.raycaster.intersectObjects(buildings, false);
@@ -100,6 +109,15 @@ class SelectTool {
             if (child.visible && child.userData.subtype === 'solar-potential') return true;
             return false;
         });
+        
+        // Добавляем измерения
+        const measureGroup = this.sceneManager.getMeasurementsGroup?.();
+        if (measureGroup) {
+            const measurements = measureGroup.children.filter(child => 
+                child.visible && child.userData.type === 'measurement'
+            );
+            buildings.push(...measurements);
+        }
         
         const buildingIntersects = this.raycaster.intersectObjects(buildings, false);
         if (buildingIntersects.length > 0 && buildingIntersects[0].distance < minDistance) {

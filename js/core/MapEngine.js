@@ -2,6 +2,7 @@
  * ============================================
  * MapEngine.js
  * Карта MapLibre (только 2D, без вращения)
+ * Поддержка OSM и ESRI Satellite
  * ============================================
  */
 
@@ -9,6 +10,9 @@ class MapEngine {
     constructor(containerId = 'map', options = {}) {
         this.containerId = containerId;
         this.map = null;
+        
+        // Текущий источник карты: 'osm' | 'esri'
+        this.mapSource = 'osm';
         
         this.options = {
             center: [37.6173, 55.7558],
@@ -22,7 +26,7 @@ class MapEngine {
     init() {
         this.map = new maplibregl.Map({
             container: this.containerId,
-            style: this._getStyle(),
+            style: this._getStyle(this.mapSource),
             center: this.options.center,
             zoom: this.options.zoom,
             pitch: 0,
@@ -45,7 +49,65 @@ class MapEngine {
         return this;
     }
     
-    _getStyle() {
+    /**
+     * Переключить источник карты
+     * @param {string} source - 'osm' | 'esri'
+     */
+    setMapSource(source, callback) {
+        if (source !== 'osm' && source !== 'esri') {
+            console.warn('[MapEngine] Неизвестный источник:', source);
+            return;
+        }
+        
+        if (source === this.mapSource) {
+            if (callback) callback();
+            return;
+        }
+        
+        this.mapSource = source;
+        this.map.setStyle(this._getStyle(source));
+        
+        // Вызываем callback после полной загрузки стиля
+        if (callback) {
+            this.map.once('idle', callback);
+        }
+        
+        console.log(`[MapEngine] Переключено на: ${source}`);
+    }
+    
+    /**
+     * Получить текущий источник
+     */
+    getMapSource() {
+        return this.mapSource;
+    }
+    
+    _getStyle(source = 'osm') {
+        if (source === 'esri') {
+            return {
+                version: 8,
+                sources: {
+                    'esri-satellite': {
+                        type: 'raster',
+                        tiles: [
+                            'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
+                        ],
+                        tileSize: 256,
+                        attribution: '© Esri, Maxar, Earthstar Geographics',
+                        maxzoom: 19
+                    }
+                },
+                layers: [{
+                    id: 'esri-satellite-layer',
+                    type: 'raster',
+                    source: 'esri-satellite',
+                    minzoom: 0,
+                    maxzoom: 19
+                }]
+            };
+        }
+        
+        // OSM по умолчанию
         return {
             version: 8,
             sources: {
