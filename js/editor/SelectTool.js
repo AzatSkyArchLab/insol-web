@@ -1,9 +1,8 @@
 /**
  * ============================================
  * SelectTool.js
- * Выбор зданий и подложек кликом
+ * Выбор зданий, деревьев и подложек кликом
  * Shift+клик — добавить/убрать из множественного выбора
- * Работает со зданиями и подложками одинаково
  * ============================================
  */
 
@@ -17,20 +16,22 @@ class SelectTool {
         this.raycaster = new THREE.Raycaster();
         this.mouse = new THREE.Vector2();
         
-        // Состояние — одиночный выбор (для совместимости)
+        // Состояние — одиночный выбор
         this.selectedMesh = null;
         this.selectedUnderlay = null;
+        this.selectedTree = null;
         this.hoveredMesh = null;
         this.hoveredUnderlay = null;
+        this.hoveredTree = null;
         this.enabled = true;
         
-        // Множественный выбор — хранит объекты { type: 'building'|'underlay', item: mesh|underlay }
-        this.selectedItems = new Map(); // key: id, value: { type, item }
+        // Множественный выбор
+        this.selectedItems = new Map();
         
         // Цвета
-        this.selectedColor = 0xff6b6b;      // Красный — одиночный выбор
-        this.multiSelectColor = 0x9b59b6;   // Фиолетовый — множественный выбор
-        this.hoverColor = 0xffaa00;         // Оранжевый — hover
+        this.selectedColor = 0xff6b6b;
+        this.multiSelectColor = 0x9b59b6;
+        this.hoverColor = 0xffaa00;
         
         // Callbacks
         this.onSelect = options.onSelect || (() => {});
@@ -84,6 +85,32 @@ class SelectTool {
     }
     
     /**
+     * Raycast для деревьев
+     */
+    _raycastTree() {
+        const treesGroup = this.sceneManager.scene.getObjectByName('trees');
+        if (!treesGroup || treesGroup.children.length === 0) return null;
+        
+        this.raycaster.setFromCamera(this.mouse, this.camera);
+        
+        // Деревья - это Group, нужен recursive raycast
+        const intersects = this.raycaster.intersectObjects(treesGroup.children, true);
+        
+        if (intersects.length > 0) {
+            // Найти родительскую группу дерева
+            let obj = intersects[0].object;
+            while (obj.parent && obj.userData.type !== 'tree') {
+                obj = obj.parent;
+            }
+            if (obj.userData.type === 'tree') {
+                return { tree: obj, distance: intersects[0].distance };
+            }
+        }
+        
+        return null;
+    }
+    
+    /**
      * Raycast для подложек
      */
     _raycastUnderlay() {
@@ -95,7 +122,7 @@ class SelectTool {
     }
     
     /**
-     * Raycast — возвращает ближайший объект (здание или подложку)
+     * Raycast — возвращает ближайший объект
      */
     _raycastAny() {
         this.raycaster.setFromCamera(this.mouse, this.camera);
@@ -125,14 +152,18 @@ class SelectTool {
             result = { type: 'building', item: buildingIntersects[0].object, distance: minDistance };
         }
         
+        // Проверяем деревья
+        const treeResult = this._raycastTree();
+        if (treeResult && treeResult.distance < minDistance) {
+            minDistance = treeResult.distance;
+            result = { type: 'tree', item: treeResult.tree, distance: minDistance };
+        }
+        
         // Проверяем подложки
         const manager = window.app?.state?.underlayManager;
         if (manager) {
             const underlay = manager.raycast(this.raycaster);
             if (underlay) {
-                // Подложки на земле, так что distance примерно равен расстоянию до камеры
-                // Для простоты считаем что подложка "ближе" если здание не найдено
-                // или если клик попал на подложку (hitbox)
                 const underlayDistance = this._getUnderlayDistance(underlay);
                 if (underlayDistance < minDistance) {
                     result = { type: 'underlay', item: underlay, distance: underlayDistance };
@@ -144,7 +175,6 @@ class SelectTool {
     }
     
     _getUnderlayDistance(underlay) {
-        // Примерное расстояние до подложки
         if (underlay.mesh) {
             const pos = underlay.mesh.position;
             return this.camera.position.distanceTo(pos);
@@ -162,10 +192,8 @@ class SelectTool {
         const hit = this._raycastAny();
         
         if (isShift) {
-            // Множественный выбор
             this._handleMultiSelect(hit);
         } else {
-            // Одиночный выбор
             this._handleSingleSelect(hit);
         }
     }
@@ -174,10 +202,7 @@ class SelectTool {
      * Одиночный выбор
      */
     _handleSingleSelect(hit) {
-        // Очищаем множественный выбор
         this._clearMultiSelection();
-        
-        // Снимаем предыдущее выделение
         this._deselectCurrent();
         
         if (!hit) {
@@ -194,18 +219,28 @@ class SelectTool {
             console.log('[SelectTool] Выбрано здание:', mesh.userData.id);
             this.onSelect(mesh.userData, mesh);
             
+        } else if (hit.type === 'tree') {
+            const tree = hit.item;
+            this.selectedTree = tree;
+            
+            // Подсветка через TreeTool
+            if (window.app?.state?.treeTool) {
+                window.app.state.treeTool.showEditPanel(tree);
+            }
+            
+            console.log('[SelectTool] Выбрано дерево:', tree.userData.id);
+            this.onSelect(tree.userData, tree);
+            
         } else if (hit.type === 'underlay') {
             const underlay = hit.item;
             this.selectedUnderlay = underlay;
             underlay.setSelected(true, false);
             
-            // Выбираем в менеджере
             const manager = window.app?.state?.underlayManager;
             if (manager) {
                 manager.select(underlay.id);
             }
             
-            // Показываем панель
             if (window.showUnderlayPanel) {
                 window.showUnderlayPanel();
             }
@@ -231,6 +266,18 @@ class SelectTool {
             this.selectedMesh = null;
         }
         
+        if (this.selectedTree) {
+            const id = this.selectedTree.userData.id;
+            if (!this.selectedItems.has(id)) {
+                this.selectedItems.set(id, { type: 'tree', item: this.selectedTree });
+            }
+            // Снимаем подсветку TreeTool
+            if (window.app?.state?.treeTool) {
+                window.app.state.treeTool.hidePanel();
+            }
+            this.selectedTree = null;
+        }
+        
         if (this.selectedUnderlay) {
             const id = this.selectedUnderlay.id;
             if (!this.selectedItems.has(id)) {
@@ -240,27 +287,25 @@ class SelectTool {
             this.selectedUnderlay = null;
         }
         
-        const id = hit.type === 'building' ? hit.item.userData.id : hit.item.id;
+        const id = hit.item.userData?.id || hit.item.id;
         
         if (this.selectedItems.has(id)) {
-            // Убираем из выбора
             const entry = this.selectedItems.get(id);
             this._restoreItem(entry);
             this.selectedItems.delete(id);
             console.log('[SelectTool] Убрано из выбора:', id);
         } else {
-            // Добавляем в выбор
             if (hit.type === 'building') {
                 this._saveOriginalColor(hit.item);
                 hit.item.material.color.setHex(this.multiSelectColor);
-            } else {
+            } else if (hit.type === 'underlay') {
                 hit.item.setSelected(true, true);
             }
+            // Деревья не подсвечиваем в мультивыборе
             this.selectedItems.set(id, { type: hit.type, item: hit.item });
             console.log('[SelectTool] Добавлено в выбор:', id);
         }
         
-        // Callbacks
         this._notifyMultiSelect();
     }
     
@@ -272,6 +317,11 @@ class SelectTool {
             this._restoreColor(entry.item);
         } else if (entry.type === 'underlay') {
             entry.item.setSelected(false);
+        } else if (entry.type === 'tree') {
+            // Снимаем подсветку
+            if (window.app?.state?.treeTool?.treeMesh) {
+                window.app.state.treeTool.treeMesh.unhighlight(entry.item);
+            }
         }
     }
     
@@ -282,6 +332,13 @@ class SelectTool {
         if (this.selectedMesh) {
             this._restoreColor(this.selectedMesh);
             this.selectedMesh = null;
+        }
+        
+        if (this.selectedTree) {
+            if (window.app?.state?.treeTool) {
+                window.app.state.treeTool.hidePanel();
+            }
+            this.selectedTree = null;
         }
         
         if (this.selectedUnderlay) {
@@ -299,7 +356,6 @@ class SelectTool {
         }
         this.selectedItems.clear();
         
-        // Уведомляем панель
         const underlayPanel = window.app?.controllers?.underlay?.panel;
         if (underlayPanel) {
             underlayPanel.updateBuildingSelection([]);
@@ -312,26 +368,29 @@ class SelectTool {
     _notifyMultiSelect() {
         const buildings = [];
         const underlays = [];
+        const trees = [];
         
         for (const entry of this.selectedItems.values()) {
             if (entry.type === 'building') {
                 buildings.push(entry.item);
-            } else {
+            } else if (entry.type === 'underlay') {
                 underlays.push(entry.item);
+            } else if (entry.type === 'tree') {
+                trees.push(entry.item);
             }
         }
         
-        this.onMultiSelect({ buildings, underlays });
+        this.onMultiSelect({ buildings, underlays, trees });
         
-        // Обновляем панель подложек
         const underlayPanel = window.app?.controllers?.underlay?.panel;
         if (underlayPanel) {
             underlayPanel.updateBuildingSelection(buildings);
         }
         
-        // Показываем карточку первого здания если есть
         if (buildings.length > 0) {
             this.onSelect(buildings[0].userData, buildings[0]);
+        } else if (trees.length > 0) {
+            this.onSelect(trees[0].userData, trees[0]);
         } else if (underlays.length > 0) {
             this.onSelect({ type: 'underlay', underlay: underlays[0] }, null);
         }
@@ -346,7 +405,6 @@ class SelectTool {
         const mesh = this._raycastBuilding();
         
         if (mesh !== this.hoveredMesh) {
-            // Снимаем hover с предыдущего
             if (this.hoveredMesh && this.hoveredMesh !== this.selectedMesh && 
                 !this.selectedItems.has(this.hoveredMesh.userData.id)) {
                 this._restoreColor(this.hoveredMesh);
@@ -354,7 +412,6 @@ class SelectTool {
             
             this.hoveredMesh = mesh;
             
-            // Применяем hover к новому
             if (mesh && mesh !== this.selectedMesh && 
                 !this.selectedItems.has(mesh.userData.id)) {
                 this._saveOriginalColor(mesh);
@@ -381,8 +438,16 @@ class SelectTool {
             }
         }
         
+        // Hover для деревьев
+        const treeResult = this._raycastTree();
+        const tree = treeResult?.tree || null;
+        
+        if (tree !== this.hoveredTree) {
+            this.hoveredTree = tree;
+        }
+        
         // Курсор
-        this.renderer.domElement.style.cursor = (mesh || underlay) ? 'pointer' : 'default';
+        this.renderer.domElement.style.cursor = (mesh || underlay || tree) ? 'pointer' : 'default';
     }
     
     _saveOriginalColor(mesh) {
@@ -401,9 +466,6 @@ class SelectTool {
     // Публичные методы
     // =============================================
     
-    /**
-     * Получить выбранные здания
-     */
     getSelectedBuildings() {
         const buildings = [];
         for (const entry of this.selectedItems.values()) {
@@ -411,16 +473,25 @@ class SelectTool {
                 buildings.push(entry.item);
             }
         }
-        // Добавляем одиночный выбор если есть
         if (this.selectedMesh && !this.selectedItems.has(this.selectedMesh.userData.id)) {
             buildings.push(this.selectedMesh);
         }
         return buildings;
     }
     
-    /**
-     * Получить выбранные подложки
-     */
+    getSelectedTrees() {
+        const trees = [];
+        for (const entry of this.selectedItems.values()) {
+            if (entry.type === 'tree') {
+                trees.push(entry.item);
+            }
+        }
+        if (this.selectedTree && !this.selectedItems.has(this.selectedTree.userData.id)) {
+            trees.push(this.selectedTree);
+        }
+        return trees;
+    }
+    
     getSelectedUnderlays() {
         const underlays = [];
         for (const entry of this.selectedItems.values()) {
@@ -434,25 +505,16 @@ class SelectTool {
         return underlays;
     }
     
-    /**
-     * Очистить множественный выбор (публичный метод)
-     */
     clearMultiSelection() {
         this._clearMultiSelection();
     }
     
-    /**
-     * Снять весь выбор
-     */
     deselect() {
         this._deselectCurrent();
         this._clearMultiSelection();
         this.onSelect(null, null);
     }
     
-    /**
-     * Включить/выключить инструмент (совместимость с App.js)
-     */
     setEnabled(enabled) {
         this.enabled = enabled;
     }
@@ -465,38 +527,37 @@ class SelectTool {
         this.enabled = false;
     }
     
-    /**
-     * Программный выбор mesh (совместимость с App.js)
-     */
     select(mesh) {
         if (mesh) {
-            this._handleSingleSelect({ type: 'building', item: mesh });
+            const type = mesh.userData?.type === 'tree' ? 'tree' : 'building';
+            this._handleSingleSelect({ type, item: mesh });
         }
     }
     
-    /**
-     * Получить текущий выбранный mesh (совместимость с App.js)
-     */
     getSelected() {
-        return this.selectedMesh;
+        return this.selectedMesh || this.selectedTree;
     }
     
-    /**
-     * Получить все выбранные здания (для совместимости с InsolationController)
-     */
     getSelectedMultiple() {
         return this.getSelectedBuildings();
     }
     
-    /**
-     * Программный выбор по ID
-     */
     selectById(id) {
         // Ищем здание
         const mesh = this.buildingsGroup.children.find(c => c.userData?.id === id);
         if (mesh) {
             this._handleSingleSelect({ type: 'building', item: mesh });
             return;
+        }
+        
+        // Ищем дерево
+        const treesGroup = this.sceneManager.scene.getObjectByName('trees');
+        if (treesGroup) {
+            const tree = treesGroup.children.find(c => c.userData?.id === id);
+            if (tree) {
+                this._handleSingleSelect({ type: 'tree', item: tree });
+                return;
+            }
         }
         
         // Ищем подложку
@@ -509,17 +570,11 @@ class SelectTool {
         }
     }
     
-    /**
-     * Обновить группу зданий (после перезагрузки)
-     */
     updateBuildingsGroup() {
         this.buildingsGroup = this.sceneManager.getBuildingsGroup();
         this.deselect();
     }
     
-    /**
-     * Уничтожить
-     */
     dispose() {
         this.renderer.domElement.removeEventListener('click', this._boundOnClick);
         this.renderer.domElement.removeEventListener('mousemove', this._boundOnMouseMove);

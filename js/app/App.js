@@ -3,9 +3,6 @@
  * App.js
  * Главный класс приложения
  * ============================================
- * 
- * Связывает модули, инициализирует контроллеры.
- * Точка входа для всего приложения.
  */
 
 import { EventBus } from './EventBus.js';
@@ -33,6 +30,10 @@ import { MeasureTool } from '../editor/MeasureTool.js';
 import { MapMeasureTool } from '../editor/MapMeasureTool.js';
 import { MeasureRenderer3D } from '../editor/MeasureRenderer3D.js';
 
+// Tree for wind CFD
+import { TreeMesh } from '../editor/TreeMesh.js';
+import { TreeTool } from '../editor/TreeTool.js';
+
 // Insolation
 import { InsolationGrid } from '../insolation/InsolationGrid.js';
 import { InsolationCalculator } from '../insolation/InsolationCalculator.js';
@@ -42,8 +43,9 @@ import { ViolationHighlighter } from '../insolation/ViolationHighlighter.js';
 import { SolarPotential } from '../analysis/SolarPotential.js';
 import { TowerPlacer } from '../analysis/TowerPlacer.js';
 import { TowerPlacerUI } from '../analysis/TowerPlacerUI.js';
-import { SolarRadiation } from '../analysis/SolarRadiation.js';  // <-- ДОБАВЛЕНО
-// WindCFD импортируется динамически в WindController
+import { TowerEvolutionOptimizer } from '../analysis/TowerEvolutionOptimizer.js';
+import { TowerEvolutionUI } from '../analysis/TowerEvolutionUI.js';
+import { SolarRadiation } from '../analysis/SolarRadiation.js';
 
 // I/O
 import { ProjectExporter } from '../io/ProjectExporter.js';
@@ -56,35 +58,25 @@ import { WindController } from '../controllers/WindController.js';
 import { ProjectController } from '../controllers/ProjectController.js';
 import { UnderlayController } from '../controllers/UnderlayController.js';
 import { DetailedGridController } from '../controllers/DetailedGridController.js';
-import { SolarRadiationController } from '../controllers/SolarRadiationController.js';  // <-- ДОБАВЛЕНО
+import { SolarRadiationController } from '../controllers/SolarRadiationController.js';
 
 
 class App {
     constructor() {
         this.bus = new EventBus();
         this.state = new AppState();
-        
-        // Контроллеры (будут добавляться)
         this.controllers = {};
-        
         console.log('[App] Создан');
     }
     
-    /**
-     * Инициализация приложения
-     */
     init() {
         this._initControllers();
         this._initMap();
         this._bindGlobalEvents();
         this._exposeDebugGlobals();
-        
         console.log('[App] Инициализирован');
     }
     
-    /**
-     * Инициализация контроллеров
-     */
     _initControllers() {
         this.controllers = {
             buildingCard: new BuildingCardController(this),
@@ -93,13 +85,10 @@ class App {
             project: new ProjectController(this),
             underlay: new UnderlayController(this),
             detailedGrid: new DetailedGridController(this),
-            solarRadiation: new SolarRadiationController(this)  // <-- ДОБАВЛЕНО
+            solarRadiation: new SolarRadiationController(this)
         };
     }
     
-    /**
-     * Инициализация карты
-     */
     _initMap() {
         const { state } = this;
         
@@ -123,7 +112,6 @@ class App {
                 }
             });
             
-            // Инициализация линейки на карте
             state.mapMeasureTool = new MapMeasureTool(state.mapEngine);
             this._initMapMeasureButton();
             
@@ -131,9 +119,6 @@ class App {
         });
     }
     
-    /**
-     * Инициализация кнопки линейки на карте
-     */
     _initMapMeasureButton() {
         const { state } = this;
         const btn = document.getElementById('map-measure-btn');
@@ -144,7 +129,6 @@ class App {
             
             if (isActive) {
                 state.mapMeasureTool.enable();
-                // Выключаем режим выбора области если активен
                 if (state.selectModeActive) {
                     this.onSelectModeClick();
                 }
@@ -153,22 +137,17 @@ class App {
             }
         });
         
-        // Очистка по Escape
         document.addEventListener('keydown', (e) => {
             if (e.code === 'Escape' && state.mapMeasureTool?.enabled) {
                 state.mapMeasureTool.clear();
             }
             
-            // Удаление выбранных зданий по Delete/Backspace
             if ((e.code === 'Delete' || e.code === 'Backspace') && !e.target.matches('input, textarea')) {
-                this._deleteSelectedBuilding();
+                this._deleteSelected();
             }
         });
     }
     
-    /**
-     * Привязка глобальных DOM-событий
-     */
     _bindGlobalEvents() {
         document.getElementById('select-mode-btn')
             .addEventListener('click', () => this.onSelectModeClick());
@@ -179,81 +158,72 @@ class App {
         document.getElementById('back-btn')
             .addEventListener('click', () => this.onBackClick());
         
-        // Переключатель слоёв карты
         this._initLayerSwitchers();
+        
+        window.addEventListener('start-tower-placement', (e) => {
+            this._onStartTowerPlacement(e);
+        });
     }
     
-    /**
-     * Инициализация переключателей слоёв
-     */
+    _onStartTowerPlacement(e) {
+        const { state } = this;
+        if (!state.towerEvolutionUI) {
+            console.warn('[App] TowerEvolutionUI не инициализирован');
+            return;
+        }
+        state.towerEvolutionUI.show();
+        console.log('[App] Tower Optimizer запущен');
+    }
+    
     _initLayerSwitchers() {
         const { state } = this;
         
-        // Переключатель на карте
         const mapSwitcher = document.getElementById('map-layer-switcher');
         if (mapSwitcher) {
             mapSwitcher.querySelectorAll('.layer-btn').forEach(btn => {
                 btn.addEventListener('click', () => {
                     const layer = btn.dataset.layer;
-                    
-                    // Обновляем UI
                     mapSwitcher.querySelectorAll('.layer-btn').forEach(b => b.classList.remove('active'));
                     btn.classList.add('active');
                     
-                    // Переключаем карту с callback для восстановления слоёв
                     if (state.mapEngine) {
                         state.mapEngine.setMapSource(layer, () => {
-                            // Восстанавливаем слои линейки если есть измерения или она активна
                             if (state.mapMeasureTool && (state.mapMeasureTool.enabled || state.mapMeasureTool.measurements.length > 0)) {
                                 state.mapMeasureTool._initLayers();
                                 state.mapMeasureTool._updateLayers();
                                 state.mapMeasureTool._updateAllLabelPositions();
                             }
-                            // Восстанавливаем AreaSelector если активен
                             if (state.areaSelector) {
                                 state.areaSelector._restoreLayers?.();
                             }
                         });
                     }
                     
-                    // Синхронизируем с переключателем сцены
                     this._syncLayerSwitcher('scene-layer-switcher', layer);
-                    
-                    // Сохраняем в state
                     state.currentMapSource = layer;
                 });
             });
         }
         
-        // Переключатель в 3D-сцене
         const sceneSwitcher = document.getElementById('scene-layer-switcher');
         if (sceneSwitcher) {
             sceneSwitcher.querySelectorAll('.layer-btn').forEach(btn => {
                 btn.addEventListener('click', () => {
                     const layer = btn.dataset.layer;
-                    
-                    // Обновляем UI
                     sceneSwitcher.querySelectorAll('.layer-btn').forEach(b => b.classList.remove('active'));
                     btn.classList.add('active');
                     
-                    // Переключаем тайлы сцены
                     if (state.sceneManager) {
                         state.sceneManager.setTileSource(layer);
                     }
                     
-                    // Синхронизируем с переключателем карты
                     this._syncLayerSwitcher('map-layer-switcher', layer);
-                    
-                    // Сохраняем в state
                     state.currentMapSource = layer;
                 });
             });
         }
     }
     
-    /**
-     * Синхронизация переключателей слоёв
-     */
     _syncLayerSwitcher(switcherId, layer) {
         const switcher = document.getElementById(switcherId);
         if (switcher) {
@@ -263,13 +233,9 @@ class App {
         }
     }
     
-    /**
-     * Инициализация контролов вида (сетка, сдвиг тайлов)
-     */
     _initViewControls() {
         const { state } = this;
         
-        // Переключатель сетки
         const gridToggle = document.getElementById('grid-toggle');
         if (gridToggle) {
             gridToggle.addEventListener('click', () => {
@@ -281,7 +247,6 @@ class App {
             });
         }
         
-        // Сдвиг тайлов X
         const offsetX = document.getElementById('tile-offset-x');
         const offsetXVal = document.getElementById('tile-offset-x-val');
         if (offsetX) {
@@ -295,7 +260,6 @@ class App {
             });
         }
         
-        // Сдвиг тайлов Y
         const offsetY = document.getElementById('tile-offset-y');
         const offsetYVal = document.getElementById('tile-offset-y-val');
         if (offsetY) {
@@ -309,7 +273,6 @@ class App {
             });
         }
         
-        // Кнопка сброса
         const resetBtn = document.getElementById('tile-offset-reset');
         if (resetBtn) {
             resetBtn.addEventListener('click', () => {
@@ -324,21 +287,15 @@ class App {
         }
     }
     
-    /**
-     * Инициализация рендерера измерений
-     */
     _initMeasureRenderer() {
         const { state } = this;
         
-        // Создаём рендерер
         state.measureRenderer3D = new MeasureRenderer3D(state.sceneManager, state.coords);
         
-        // Загружаем измерения с карты если есть
         if (state.mapMeasureTool?.measurements?.length > 0) {
             state.measureRenderer3D.loadFromMap(state.mapMeasureTool.measurements);
         }
         
-        // Обновляем метки при движении камеры
         state.sceneManager.controls.addEventListener('change', () => {
             if (state.measureRenderer3D) {
                 state.measureRenderer3D.updateLabels();
@@ -346,9 +303,6 @@ class App {
         });
     }
     
-    /**
-     * Переключение режима выбора области
-     */
     onSelectModeClick() {
         const { state } = this;
         state.selectModeActive = !state.selectModeActive;
@@ -366,9 +320,6 @@ class App {
         }
     }
     
-    /**
-     * Загрузка 3D-сцены
-     */
     async onLoadClick() {
         const { state, bus } = this;
         
@@ -384,20 +335,16 @@ class App {
         const heightM = (bounds.north - bounds.south) * 111320;
         const widthM = (bounds.east - bounds.west) * 111320 * Math.cos(centerLat * Math.PI / 180);
         
-        // Координаты
         state.coords = new Coordinates(centerLat, centerLon);
         this._updateCoordsDisplay(centerLat, centerLon);
         
-        // Загрузка зданий
         const buildings = await state.buildingLoader.loadBuildings(
             bounds.south, bounds.west, bounds.north, bounds.east
         );
         
-        // Переключение UI
         document.getElementById('map-mode').classList.add('hidden');
         document.getElementById('scene-mode').classList.remove('hidden');
         
-        // Сцена
         if (state.sceneManager) {
             state.sceneManager.clearBuildings();
         } else {
@@ -408,14 +355,12 @@ class App {
         state.sceneManager.coordinates = state.coords;
         state.sceneManager.setAreaSize(widthM, heightM);
         
-        // Устанавливаем источник тайлов из текущего состояния
         const currentSource = state.currentMapSource || 'osm';
         state.sceneManager.tileSource = currentSource;
         this._syncLayerSwitcher('scene-layer-switcher', currentSource);
         
         state.sceneManager.loadGroundTile(bounds);
         
-        // Создание мешей
         state.buildingMesh = new BuildingMesh(state.coords);
         const meshes = state.buildingMesh.createMeshes(buildings);
         
@@ -424,21 +369,16 @@ class App {
             group.add(mesh);
         }
         
-        // Инициализация инструментов
         this._initTools();
         this._initInsolation();
         this._initProjectIO();
         this._initViewControls();
-        
-        // Загрузка измерений с карты
         this._initMeasureRenderer();
         
-        // Связываем MeasureTool с MeasureRenderer3D
         if (state.measureTool && state.measureRenderer3D) {
             state.measureTool.setRenderer(state.measureRenderer3D);
         }
         
-        // Обновление UI
         const residentialCount = buildings.filter(b => b.properties.isResidential).length;
         document.getElementById('building-count').textContent = 
             `${meshes.length} (жилых: ${residentialCount})`;
@@ -446,7 +386,6 @@ class App {
         btn.textContent = 'Загрузить область';
         btn.disabled = false;
         
-        // Событие
         bus.emit('scene:loaded', { 
             bounds, 
             buildingCount: meshes.length,
@@ -456,19 +395,14 @@ class App {
         console.log(`[App] Загружено: ${meshes.length} зданий`);
     }
     
-    /**
-     * Возврат к карте
-     */
     onBackClick() {
         const { state, bus } = this;
         
         document.getElementById('scene-mode').classList.add('hidden');
         document.getElementById('map-mode').classList.remove('hidden');
         
-        // Закрываем карточку
         bus.emit('building:deselected');
         
-        // Сброс UI режима выбора
         const btn = document.getElementById('select-mode-btn');
         btn.textContent = 'Изменить область';
         btn.classList.remove('active');
@@ -481,43 +415,36 @@ class App {
         document.getElementById('load-btn').textContent = 'Обновить область';
         this._updateLoadButton();
         
-        // Очистка инсоляции
-        if (state.insolationGrid) {
-            state.insolationGrid.clearGrid();
-        }
-        if (state.insolationCalculator) {
-            state.insolationCalculator.hideRays();
-        }
+        if (state.insolationGrid) state.insolationGrid.clearGrid();
+        if (state.insolationCalculator) state.insolationCalculator.hideRays();
         if (state.violationHighlighter) {
             state.violationHighlighter.clearAllHighlights();
             state.violationHighlighter.clearBaseline();
         }
-        if (state.solarPotential) {
-            state.solarPotential.clear();
-        }
+        if (state.solarPotential) state.solarPotential.clear();
+        if (state.towerEvolutionOptimizer) state.towerEvolutionOptimizer.clear();
+        if (state.towerEvolutionUI) state.towerEvolutionUI.hide();
         
-        // Очистка ветра
         this._removeWindOverlay();
         
-        // Очистка Solar Radiation  // <-- ДОБАВЛЕНО
         if (this.controllers.solarRadiation?.solarRadiation) {
             this.controllers.solarRadiation.solarRadiation.clearVisualization();
         }
         
-        // Сброс состояния
+        if (state.treeTool) {
+            state.treeTool.disable();
+            state.treeTool.deselectTree();
+        }
+        
         state.resetSceneState();
         this._updateCoordsDisplay();
         
-        // Отключение инструментов
         if (state.moveTool) state.moveTool.disable();
         if (state.drawTool) state.drawTool.disable();
         
         bus.emit('scene:cleared');
     }
     
-    /**
-     * Инициализация инструментов редактирования
-     */
     _initTools() {
         const { state, bus } = this;
         const sm = state.sceneManager;
@@ -525,14 +452,10 @@ class App {
         // SelectTool
         state.selectTool = new SelectTool(sm, {
             onSelect: (data, mesh) => {
-                // Проверяем что data не null (клик на пустое место)
                 if (!data) {
-                    if (state.solarPotential) {
-                        state.solarPotential.deselect();
-                    }
-                    if (state.measureRenderer3D) {
-                        state.measureRenderer3D.deselect();
-                    }
+                    if (state.solarPotential) state.solarPotential.deselect();
+                    if (state.measureRenderer3D) state.measureRenderer3D.deselect();
+                    if (state.treeTool) state.treeTool.hidePanel();
                     return;
                 }
                 
@@ -543,27 +466,29 @@ class App {
                     return;
                 }
                 
+                // Деревья - SelectTool уже вызывает treeTool.showEditPanel
+                if (data.type === 'tree') {
+                    bus.emit('tree:selected', { data, mesh });
+                    return;
+                }
+                
                 if (data.subtype === 'solar-potential' && state.solarPotential) {
                     state.solarPotential.showPanel();
                     state.solarPotential.select();
                     return;
                 }
-                if (state.solarPotential) {
-                    state.solarPotential.deselect();
-                }
-                if (state.measureRenderer3D) {
-                    state.measureRenderer3D.deselect();
-                }
+                
+                if (state.solarPotential) state.solarPotential.deselect();
+                if (state.measureRenderer3D) state.measureRenderer3D.deselect();
+                if (state.treeTool) state.treeTool.hidePanel();
+                
                 bus.emit('building:selected', { data, mesh });
             },
-            onMultiSelect: (meshes) => {
-                if (state.solarPotential) {
-                    state.solarPotential.deselect();
-                }
-                if (state.measureRenderer3D) {
-                    state.measureRenderer3D.deselect();
-                }
-                bus.emit('building:multiselect', { meshes });
+            onMultiSelect: (selection) => {
+                if (state.solarPotential) state.solarPotential.deselect();
+                if (state.measureRenderer3D) state.measureRenderer3D.deselect();
+                if (state.treeTool) state.treeTool.hidePanel();
+                bus.emit('building:multiselect', { meshes: selection.buildings, trees: selection.trees });
             }
         });
         
@@ -590,6 +515,23 @@ class App {
         // RectTool
         state.rectTool = new RectTool(sm, state.coords, {
             onCreate: (mesh) => this._onBuildingCreated(mesh)
+        });
+        
+        // TreeTool
+        state.treeMesh = new TreeMesh();
+        state.treeTool = new TreeTool(sm, state.coords, {
+            onCreate: (tree) => {
+                console.log('[App] Дерево создано:', tree.userData.id, 'LAD:', tree.userData.lad);
+                bus.emit('tree:created', { tree });
+            },
+            onUpdate: (tree) => {
+                console.log('[App] Дерево обновлено:', tree.userData.id);
+                bus.emit('tree:updated', { tree });
+            },
+            onDelete: (treeId) => {
+                console.log('[App] Дерево удалено:', treeId);
+                bus.emit('tree:deleted', { treeId });
+            }
         });
         
         // MoveTool
@@ -621,9 +563,6 @@ class App {
         state.measureTool = new MeasureTool(sm);
     }
     
-    /**
-     * Инициализация инсоляции
-     */
     _initInsolation() {
         const { state } = this;
         const sm = state.sceneManager;
@@ -649,16 +588,19 @@ class App {
         
         state.solarPotential = new SolarPotential(
             sm, state.insolationCalculator, state.insolationGrid, {
-                cellSize: 12,       // 12×12м ячейки
-                heightStep: 3,      // Шаг роста 3м
+                cellSize: 12,
+                heightStep: 3,
                 maxHeight: 75,
-                animationDelay: 50, // Для визуализации роста
+                animationDelay: 50,
                 onProgress: (progress, iteration) => {},
                 onComplete: (stats) => {
                     alert(`Потенциал рассчитан!\n\nКолонок: ${stats.columnCount}\nПлощадь: ${stats.totalArea.toFixed(0)} м²\nОбъём: ${stats.totalVolume.toFixed(0)} м³\nМакс. высота: ${stats.maxHeight.toFixed(0)} м`);
                 }
             }
         );
+        
+        state.towerEvolutionOptimizer = new TowerEvolutionOptimizer(state.solarPotential, sm);
+        state.towerEvolutionUI = new TowerEvolutionUI(state.towerEvolutionOptimizer);
         
         state.towerPlacer = new TowerPlacer(
             sm, state.insolationCalculator, state.insolationGrid, {
@@ -673,9 +615,6 @@ class App {
         });
     }
     
-    /**
-     * Инициализация экспорта/импорта
-     */
     _initProjectIO() {
         const { state } = this;
         
@@ -697,14 +636,11 @@ class App {
         );
     }
     
-    /**
-     * Обработчик смены инструмента
-     */
     _onToolChange(tool, prevTool) {
         const { state, bus } = this;
         
         if (tool === 'delete') {
-            this._deleteSelectedBuilding();
+            this._deleteSelected();
             return;
         }
         
@@ -715,12 +651,12 @@ class App {
         if (state.heightEditor) state.heightEditor.deactivate();
         if (state.selectTool) state.selectTool.setEnabled(false);
         if (state.measureTool) state.measureTool.disable();
+        if (state.treeTool) state.treeTool.disable();
         
         if (state.sceneManager?.controls) {
             state.sceneManager.controls.enabled = true;
         }
         
-        // Показываем панель управления видом
         document.getElementById('scene-view-controls')?.classList.remove('hidden');
         
         switch (tool) {
@@ -745,11 +681,9 @@ class App {
                 state.potentialMode = false;
                 state.generationMode = false;
                 if (state.measureTool) state.measureTool.enable();
-                // Отключаем вращение камеры чтобы клики проходили к линейке
                 if (state.sceneManager?.controls) {
                     state.sceneManager.controls.enabled = false;
                 }
-                // Скрываем панель управления видом
                 document.getElementById('scene-view-controls')?.classList.add('hidden');
                 break;
                 
@@ -779,20 +713,23 @@ class App {
                 state.generationMode = true;
                 if (state.drawTool) state.drawTool.enable();
                 break;
+                
+            case 'tree':
+                bus.emit('building:deselected');
+                state.potentialMode = false;
+                state.generationMode = false;
+                if (state.treeTool) state.treeTool.enable();
+                break;
         }
         
         bus.emit('tool:changed', { tool, prevTool });
     }
     
-    /**
-     * Обработчик создания здания
-     */
     _onBuildingCreated(mesh) {
         const { state, bus } = this;
         
         console.log(`[App] Создан полигон: ${mesh.userData.id}`);
         
-        // Solar Potential режим
         if (state.potentialMode) {
             const points = mesh.userData.basePoints;
             state.sceneManager.getBuildingsGroup().remove(mesh);
@@ -810,7 +747,6 @@ class App {
             return;
         }
         
-        // Tower Generation режим
         if (state.generationMode) {
             const points = mesh.userData.basePoints;
             mesh.material.color.setHex(0x2196f3);
@@ -828,7 +764,6 @@ class App {
             return;
         }
         
-        // Обычное создание
         state.editorToolbar.setTool('select');
         state.selectTool.select(mesh);
         bus.emit('building:selected', { data: mesh.userData, mesh });
@@ -836,12 +771,18 @@ class App {
     }
     
     /**
-     * Удаление выбранного здания
+     * Удаление выбранного объекта (здание, дерево или измерение)
      */
-    _deleteSelectedBuilding() {
+    _deleteSelected() {
         const { state, bus } = this;
         
-        // Сначала проверяем выбранное измерение
+        // Проверяем дерево в режиме редактирования
+        if (state.treeTool?.editMode && state.treeTool?.selectedTree) {
+            state.treeTool.deleteTree(state.treeTool.selectedTree);
+            return;
+        }
+        
+        // Проверяем выбранное измерение
         if (state.measureRenderer3D?.selectedId !== null) {
             const id = state.measureRenderer3D.selectedId;
             if (confirm(`Удалить измерение #${id}?`)) {
@@ -852,42 +793,64 @@ class App {
         
         if (!state.selectTool) return;
         
-        // Собираем все выбранные здания
+        // Собираем выбранные здания и деревья
         let meshesToDelete = [];
+        let treesToDelete = [];
         
         // Множественный выбор
         if (state.selectTool.selectedItems?.size > 0) {
-            meshesToDelete = Array.from(state.selectTool.selectedItems.values())
-                .filter(item => item.type === 'building')
-                .map(item => item.item);
-        }
-        // Одиночный выбор
-        else if (state.selectTool.selectedMesh) {
-            meshesToDelete = [state.selectTool.selectedMesh];
+            for (const entry of state.selectTool.selectedItems.values()) {
+                if (entry.type === 'building') {
+                    meshesToDelete.push(entry.item);
+                } else if (entry.type === 'tree') {
+                    treesToDelete.push(entry.item);
+                }
+            }
         }
         
-        if (meshesToDelete.length === 0) {
-            alert('Сначала выберите здание или измерение');
+        // Одиночный выбор - здание
+        if (state.selectTool.selectedMesh) {
+            meshesToDelete.push(state.selectTool.selectedMesh);
+        }
+        
+        // Одиночный выбор - дерево
+        if (state.selectTool.selectedTree) {
+            treesToDelete.push(state.selectTool.selectedTree);
+        }
+        
+        const totalCount = meshesToDelete.length + treesToDelete.length;
+        
+        if (totalCount === 0) {
+            alert('Сначала выберите здание, дерево или измерение');
             return;
         }
         
         // Подтверждение
-        const confirmMsg = meshesToDelete.length === 1 
-            ? `Удалить здание ${meshesToDelete[0].userData.id}?`
-            : `Удалить ${meshesToDelete.length} зданий?`;
+        let confirmMsg;
+        if (meshesToDelete.length > 0 && treesToDelete.length > 0) {
+            confirmMsg = `Удалить ${meshesToDelete.length} зданий и ${treesToDelete.length} деревьев?`;
+        } else if (meshesToDelete.length === 1) {
+            confirmMsg = `Удалить здание ${meshesToDelete[0].userData.id}?`;
+        } else if (treesToDelete.length === 1) {
+            confirmMsg = `Удалить дерево?`;
+        } else if (meshesToDelete.length > 1) {
+            confirmMsg = `Удалить ${meshesToDelete.length} зданий?`;
+        } else {
+            confirmMsg = `Удалить ${treesToDelete.length} деревьев?`;
+        }
         
         if (!confirm(confirmMsg)) return;
         
         if (state.moveTool) state.moveTool.forceReset();
         
+        // Удаляем здания
         const group = state.sceneManager.getBuildingsGroup();
-        const deletedIds = [];
+        const deletedBuildingIds = [];
         
         for (const mesh of meshesToDelete) {
             const meshId = mesh.userData.id;
-            deletedIds.push(meshId);
+            deletedBuildingIds.push(meshId);
             
-            // Очистка инсоляционной сетки для этого здания
             if (state.insolationGrid) {
                 state.insolationGrid.removeGridForMesh(mesh);
                 
@@ -899,7 +862,6 @@ class App {
                 }
             }
             
-            // Удаление меша
             group.remove(mesh);
             if (mesh.geometry) mesh.geometry.dispose();
             if (mesh.material) {
@@ -911,6 +873,24 @@ class App {
             }
         }
         
+        // Удаляем деревья
+        const treesGroup = state.sceneManager.scene.getObjectByName('trees');
+        const deletedTreeIds = [];
+        
+        for (const tree of treesToDelete) {
+            const treeId = tree.userData.id;
+            deletedTreeIds.push(treeId);
+            
+            if (treesGroup) {
+                treesGroup.remove(tree);
+            }
+            
+            tree.traverse(child => {
+                if (child.geometry) child.geometry.dispose();
+                if (child.material) child.material.dispose();
+            });
+        }
+        
         // Сбрасываем кэш инсоляции
         if (state.insolationCalculator) {
             state.insolationCalculator.invalidateObstaclesCache();
@@ -919,10 +899,18 @@ class App {
         state.selectTool.deselect();
         bus.emit('building:deselected');
         
-        console.log(`[App] Удалено ${deletedIds.length} зданий:`, deletedIds);
+        if (deletedBuildingIds.length > 0) {
+            console.log(`[App] Удалено ${deletedBuildingIds.length} зданий:`, deletedBuildingIds);
+            for (const meshId of deletedBuildingIds) {
+                bus.emit('building:deleted', { meshId });
+            }
+        }
         
-        for (const meshId of deletedIds) {
-            bus.emit('building:deleted', { meshId });
+        if (deletedTreeIds.length > 0) {
+            console.log(`[App] Удалено ${deletedTreeIds.length} деревьев:`, deletedTreeIds);
+            for (const treeId of deletedTreeIds) {
+                bus.emit('tree:deleted', { treeId });
+            }
         }
     }
     
@@ -976,11 +964,9 @@ class App {
     // ============================================
     
     _exposeDebugGlobals() {
-        // Для отладки в консоли
         window.app = this;
         window.bus = this.bus;
         
-        // Совместимость со старым кодом
         Object.defineProperty(window, 'sceneManager', {
             get: () => this.state.sceneManager
         });
@@ -995,6 +981,15 @@ class App {
         });
         Object.defineProperty(window, 'insolationCalculator', {
             get: () => this.state.insolationCalculator
+        });
+        Object.defineProperty(window, 'towerOptimizer', {
+            get: () => this.state.towerEvolutionOptimizer
+        });
+        Object.defineProperty(window, 'towerUI', {
+            get: () => this.state.towerEvolutionUI
+        });
+        Object.defineProperty(window, 'treeTool', {
+            get: () => this.state.treeTool
         });
     }
 }
