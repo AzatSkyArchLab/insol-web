@@ -3,6 +3,11 @@
  * SelectTool.js
  * Выбор зданий, деревьев и подложек кликом
  * Shift+клик — добавить/убрать из множественного выбора
+ * 
+ * Поддержка CFD:
+ * - Отдельный список cfdSelectedTrees для расчёта ветра
+ * - Оранжевая подсветка деревьев для CFD
+ * - Интеграция с WindCFD модулем
  * ============================================
  */
 
@@ -28,22 +33,29 @@ class SelectTool {
         // Множественный выбор
         this.selectedItems = new Map();
         
+        // ========== CFD: Отдельный выбор деревьев для расчёта ==========
+        this.cfdSelectedTrees = new Map(); // id -> tree
+        this.cfdMode = false; // Режим выбора деревьев для CFD
+        
         // Цвета
         this.selectedColor = 0xff6b6b;
         this.multiSelectColor = 0x9b59b6;
         this.hoverColor = 0xffaa00;
+        this.cfdTreeColor = 0xff8800;      // Оранжевый для CFD деревьев
+        this.cfdTreeEmissive = 0x442200;   // Свечение CFD деревьев
         
         // Callbacks
         this.onSelect = options.onSelect || (() => {});
         this.onMultiSelect = options.onMultiSelect || (() => {});
         this.onHover = options.onHover || (() => {});
+        this.onCFDTreesChange = options.onCFDTreesChange || (() => {}); // Callback для CFD
         
         this._boundOnClick = this._onClick.bind(this);
         this._boundOnMouseMove = this._onMouseMove.bind(this);
         
         this._init();
         
-        console.log('[SelectTool] Создан');
+        console.log('[SelectTool] Создан с поддержкой CFD');
     }
     
     _init() {
@@ -191,11 +203,79 @@ class SelectTool {
         const isShift = event.shiftKey;
         const hit = this._raycastAny();
         
+        // CFD режим: клик на дерево добавляет/убирает его из CFD списка
+        if (this.cfdMode && hit && hit.type === 'tree') {
+            this._handleCFDTreeClick(hit.item, isShift);
+            return;
+        }
+        
         if (isShift) {
             this._handleMultiSelect(hit);
         } else {
             this._handleSingleSelect(hit);
         }
+    }
+    
+    // ========== CFD: Обработка клика на дерево ==========
+    
+    _handleCFDTreeClick(tree, addToSelection) {
+        const id = tree.userData.id || tree.uuid;
+        
+        if (this.cfdSelectedTrees.has(id)) {
+            // Убираем из CFD
+            this._unhighlightCFDTree(tree);
+            this.cfdSelectedTrees.delete(id);
+            console.log(`[SelectTool] CFD: убрано дерево ${id}, осталось: ${this.cfdSelectedTrees.size}`);
+        } else {
+            // Добавляем в CFD
+            this._highlightCFDTree(tree);
+            this.cfdSelectedTrees.set(id, tree);
+            console.log(`[SelectTool] CFD: добавлено дерево ${id}, всего: ${this.cfdSelectedTrees.size}`);
+        }
+        
+        // Уведомляем WindCFD
+        this.onCFDTreesChange(this.getCFDSelectedTrees());
+        
+        // Обновляем UI если есть WindCFD
+        if (window.windCFD) {
+            window.windCFD.updateBuildingsInfo?.();
+        }
+    }
+    
+    _highlightCFDTree(tree) {
+        tree.traverse(child => {
+            if (child.isMesh && child.material) {
+                // Сохраняем оригинальные цвета
+                if (child.material.color && !child.userData._cfdOriginalColor) {
+                    child.userData._cfdOriginalColor = child.material.color.getHex();
+                }
+                if (child.material.emissive && !child.userData._cfdOriginalEmissive) {
+                    child.userData._cfdOriginalEmissive = child.material.emissive.getHex();
+                }
+                
+                // Подсвечиваем оранжевым
+                if (child.material.color) {
+                    child.material.color.setHex(this.cfdTreeColor);
+                }
+                if (child.material.emissive) {
+                    child.material.emissive.setHex(this.cfdTreeEmissive);
+                }
+            }
+        });
+    }
+    
+    _unhighlightCFDTree(tree) {
+        tree.traverse(child => {
+            if (child.isMesh && child.material) {
+                // Восстанавливаем оригинальные цвета
+                if (child.userData._cfdOriginalColor !== undefined && child.material.color) {
+                    child.material.color.setHex(child.userData._cfdOriginalColor);
+                }
+                if (child.userData._cfdOriginalEmissive !== undefined && child.material.emissive) {
+                    child.material.emissive.setHex(child.userData._cfdOriginalEmissive);
+                }
+            }
+        });
     }
     
     /**
@@ -270,6 +350,8 @@ class SelectTool {
             const id = this.selectedTree.userData.id;
             if (!this.selectedItems.has(id)) {
                 this.selectedItems.set(id, { type: 'tree', item: this.selectedTree });
+                // Подсвечиваем в мультиселекте
+                this._highlightTreeMulti(this.selectedTree);
             }
             // Снимаем подсветку TreeTool
             if (window.app?.state?.treeTool) {
@@ -300,13 +382,43 @@ class SelectTool {
                 hit.item.material.color.setHex(this.multiSelectColor);
             } else if (hit.type === 'underlay') {
                 hit.item.setSelected(true, true);
+            } else if (hit.type === 'tree') {
+                // Подсвечиваем дерево в мультиселекте
+                this._highlightTreeMulti(hit.item);
             }
-            // Деревья не подсвечиваем в мультивыборе
             this.selectedItems.set(id, { type: hit.type, item: hit.item });
             console.log('[SelectTool] Добавлено в выбор:', id);
         }
         
         this._notifyMultiSelect();
+    }
+    
+    /**
+     * Подсветка дерева в мультиселекте (фиолетовый)
+     */
+    _highlightTreeMulti(tree) {
+        tree.traverse(child => {
+            if (child.isMesh && child.material && child.material.color) {
+                if (!child.userData._multiOriginalColor) {
+                    child.userData._multiOriginalColor = child.material.color.getHex();
+                }
+                child.material.color.setHex(this.multiSelectColor);
+            }
+        });
+    }
+    
+    /**
+     * Снять подсветку дерева мультиселекта
+     */
+    _unhighlightTreeMulti(tree) {
+        tree.traverse(child => {
+            if (child.isMesh && child.material && child.material.color) {
+                if (child.userData._multiOriginalColor !== undefined) {
+                    child.material.color.setHex(child.userData._multiOriginalColor);
+                    delete child.userData._multiOriginalColor;
+                }
+            }
+        });
     }
     
     /**
@@ -318,9 +430,10 @@ class SelectTool {
         } else if (entry.type === 'underlay') {
             entry.item.setSelected(false);
         } else if (entry.type === 'tree') {
-            // Снимаем подсветку
+            this._unhighlightTreeMulti(entry.item);
+            // Снимаем подсветку TreeTool
             if (window.app?.state?.treeTool?.treeMesh) {
-                window.app.state.treeTool.treeMesh.unhighlight(entry.item);
+                window.app.state.treeTool.treeMesh.unhighlight?.(entry.item);
             }
         }
     }
@@ -505,6 +618,74 @@ class SelectTool {
         return underlays;
     }
     
+    // ========== CFD методы ==========
+    
+    /**
+     * Включить/выключить режим CFD выбора деревьев
+     */
+    setCFDMode(enabled) {
+        this.cfdMode = enabled;
+        console.log(`[SelectTool] CFD mode: ${enabled ? 'ON' : 'OFF'}`);
+        
+        if (!enabled) {
+            // При выключении можно сохранить или очистить выбор
+            // this.clearCFDTreeSelection();
+        }
+    }
+    
+    /**
+     * Получить деревья, выбранные для CFD
+     */
+    getCFDSelectedTrees() {
+        return Array.from(this.cfdSelectedTrees.values());
+    }
+    
+    /**
+     * Добавить дерево в CFD выбор программно
+     */
+    addTreeToCFD(tree) {
+        const id = tree.userData.id || tree.uuid;
+        if (!this.cfdSelectedTrees.has(id)) {
+            this._highlightCFDTree(tree);
+            this.cfdSelectedTrees.set(id, tree);
+            this.onCFDTreesChange(this.getCFDSelectedTrees());
+        }
+    }
+    
+    /**
+     * Убрать дерево из CFD выбора
+     */
+    removeTreeFromCFD(tree) {
+        const id = tree.userData.id || tree.uuid;
+        if (this.cfdSelectedTrees.has(id)) {
+            this._unhighlightCFDTree(tree);
+            this.cfdSelectedTrees.delete(id);
+            this.onCFDTreesChange(this.getCFDSelectedTrees());
+        }
+    }
+    
+    /**
+     * Очистить CFD выбор деревьев
+     */
+    clearCFDTreeSelection() {
+        for (const tree of this.cfdSelectedTrees.values()) {
+            this._unhighlightCFDTree(tree);
+        }
+        this.cfdSelectedTrees.clear();
+        this.onCFDTreesChange([]);
+        console.log('[SelectTool] CFD tree selection cleared');
+    }
+    
+    /**
+     * Проверить, выбрано ли дерево для CFD
+     */
+    isTreeSelectedForCFD(tree) {
+        const id = tree.userData.id || tree.uuid;
+        return this.cfdSelectedTrees.has(id);
+    }
+    
+    // ========== Остальные публичные методы ==========
+    
     clearMultiSelection() {
         this._clearMultiSelection();
     }
@@ -579,6 +760,7 @@ class SelectTool {
         this.renderer.domElement.removeEventListener('click', this._boundOnClick);
         this.renderer.domElement.removeEventListener('mousemove', this._boundOnMouseMove);
         this.deselect();
+        this.clearCFDTreeSelection();
     }
 }
 
